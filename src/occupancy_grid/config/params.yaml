@@ -1,0 +1,6 @@
+occupancy_grid_node:
+  ros__parameters:
+    map_width: 40
+    map_height: 25
+    resolution: 0.1
+    laser_frame: 'ego_racecar/laser'
