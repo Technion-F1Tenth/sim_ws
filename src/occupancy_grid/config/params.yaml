@@ -4,3 +4,7 @@ occupancy_grid_node:
     map_height: 25
     resolution: 0.1
     laser_frame: 'ego_racecar/laser'
+    laser_topic: '/scan'
+    odom_topic: 'ego_racecar/odom'
+    map_topic: '/occupancy_grid'
+

@@ -1,0 +1,11 @@
+reactive_node:
+  ros__parameters:
+    bubble_radius: 0.5
+    laser_topic: '/scan'
+    drive_topic: '/reactive_drive'
+    slow_mode: True
+    max_speed: 7.0
+    min_speed: 1.0
+    min_threshold_for_corner: 1.0
+    corner_detection_resolution: 2
+    car_width: 0.5

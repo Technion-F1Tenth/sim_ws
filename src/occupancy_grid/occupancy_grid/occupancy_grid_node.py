@@ -21,19 +21,24 @@ class OccupancyGridNode(Node):
                 ('map_height',30),
                 ('map_width',40),
                 ('resolution', 0.1),
-                ('laser_frame', 'ego_racecar/laser')
+                ('laser_frame', 'ego_racecar/laser'),
+                ('laser_topic', '/scan'),
+                ('odom_topic', 'ego_racecar/odom'),
+                ('map_topic', '/occupancy_grid'),
+
+
             ]
         )        
 
-        self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
-        self.odom_sub = self.create_subscription(Odometry, 'ego_racecar/odom', self.odom_callback, 10)
-        self.occupancy_grid_pub = self.create_publisher(OccupancyGrid, '/occupancy_grid', 10)
+        self.scan_sub = self.create_subscription(LaserScan, self.get_parameter('laser_topic').value, self.scan_callback, 10)
+        self.odom_sub = self.create_subscription(Odometry, self.get_parameter('odom_topic') , self.odom_callback, 10)
+        self.occupancy_grid_pub = self.create_publisher(OccupancyGrid, self.get_parameter('map_topic'), 10)
         self.curr_orientation = None
         self.curr_pos = None
         self.width = self.get_parameter('map_width').value
         self.height = self.get_parameter('map_height').value
         self.resolution  = self.get_parameter('resolution').value
-        self.rotMatrix = None
+        self.rotation_matrix = None
 
     def in_grid(self, x_grid, y_grid):
         return y_grid >= 0 and y_grid < self.height and x_grid >= 0 and x_grid < self.width
@@ -54,7 +59,7 @@ class OccupancyGridNode(Node):
 
         euler = euler_from_quaternion(self.curr_orientation)
         heading = euler[2]
-        self.rotMatrix = np.array([[np.cos(heading), -np.sin(heading)], [np.sin(heading), np.cos(heading)]])
+        self.rotation_matrix = np.array([[np.cos(heading), -np.sin(heading)], [np.sin(heading), np.cos(heading)]])
         
     def set_obstacle(self, grid, angles, dist, lidar_position=0.265):
         print("Started to construct grid")
@@ -146,10 +151,10 @@ class OccupancyGridNode(Node):
             #print(np.dot(rotMatrix, np.array([0, + self.height // 2 * self.resolution])))
             #temp = np.dot(rotMatrix, np.array([0, + self.height // 2 * self.resolution])) + [self.curr_pos[0], self.curr_pos[1]]
             #print(temp)
-            if self.rotMatrix is None:
+            if self.rotation_matrix is None:
                 return
 
-            new_origin = np.dot(self.rotMatrix, np.array([0, - self.height // 2 * self.resolution])) + [self.curr_pos[0], self.curr_pos[1]]
+            new_origin = np.dot(self.rotation_matrix, np.array([0, - self.height // 2 * self.resolution])) + [self.curr_pos[0], self.curr_pos[1]]
 
 
             map_msg.info.origin.position.x = new_origin[0]

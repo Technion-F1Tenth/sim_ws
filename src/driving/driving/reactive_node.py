@@ -23,13 +23,34 @@ class ReactiveFollowGap(Node):
         # Topics & Subs, Pubs
         lidarscan_topic = '/scan'
         drive_topic = '/reactive_drive'
-        self.bubble_radius = 0.5
-        self.create_subscription(LaserScan, lidarscan_topic, self.lidar_callback,10)
-        self.drive_pub = self.create_publisher(AckermannDriveStamped, drive_topic, 10)
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('bubble_radius', 0.5),
+                ('laser_topic', '/scan'),
+                ('drive_topic', '/reactive_drive'),
+                ('slow_mode', True),
+                ('max_speed', 7.0),
+                ('min_speed', 1.0),
+                ('min_threshold_for_corner', 1.),
+                ('corner_detection_resolution', 2),
+                ('car_width', 0.5),
+            ]
+        )        
+        self.car_width = self.get_parameter('car_width').value
+        self.corner_detection_resolution = self.get_parameter('corner_detection_resolution').value
+        self.min_threshold_for_corner = self.get_parameter('min_threshold_for_corner').value
+        self.min_speed = self.get_parameter('min_speed').value
+        self.max_speed = self.get_parameter('max_speed').value
+        self.slow_mode = self.get_parameter('slow_mode').value
+        
+        self.bubble_radius = self.get_parameter('bubble_radius').value
+        self.create_subscription(LaserScan, self.get_parameter('laser_topic').value, self.lidar_callback,10)
+        self.drive_pub = self.create_publisher(AckermannDriveStamped, self.get_parameter('drive_topic').value, 10)
         self.current_steeering_angle = 0.0
         self.integral = 0.0
         self.prev_best_point = None
-
+        
         # TODO: Publish to drive
 
     def preprocess_lidar(self, ranges,lidar_min, lidar_max, angle_increment):
@@ -61,8 +82,8 @@ class ReactiveFollowGap(Node):
         i = 0
         corners_removed = False
         while i < len(ranges) - 1:
-            if np.abs(ranges[i] - ranges[i+1]) > MIN_THRESHOLD_FOR_CORNER:
-                delta_theta = np.tan(CAR_WIDTH / (2 * ranges[i]))
+            if np.abs(ranges[i] - ranges[i+1]) > self.get_parameter('min_threshold_for_corner').value:
+                delta_theta = np.tan(self.car_width / (2 * ranges[i]))
                 if ranges[i] > delta_theta:
                     min_idx = np.argmin(np.abs(ranges - (ranges[i] - delta_theta)))
                 else:
@@ -138,10 +159,10 @@ class ReactiveFollowGap(Node):
 
     
     def get_velocity(self, steering_angle, adaptive=True):
-        if SLOW_MODE:
-            return MIN_SPEED
+        if self.slow_mode:
+            return self.min_speed
         if adaptive:
-            velocity = max(MAX_SPEED - abs(np.rad2deg(steering_angle))/50, 0.8) # Velocity varies smoothly with steering angle
+            velocity = max(self.max_speed - abs(np.rad2deg(steering_angle))/50, 0.8) # Velocity varies smoothly with steering angle
             # print('Velocity: ' + str(velocity))
             return velocity
         if abs(steering_angle) < np.deg2rad(5):

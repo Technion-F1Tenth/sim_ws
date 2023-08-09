@@ -23,7 +23,7 @@ class Behavior(Node):
     """
     def __init__(self):
         super().__init__('reactive_node')
-        # Topics & Subs, Pubs
+        # TODO: Refactor to use parameters
         reactive_node_drive_topic = '/reactive_drive'
         drive_topic = '/drive'
         laser_topic = '/scan'
