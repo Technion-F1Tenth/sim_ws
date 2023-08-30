@@ -40,7 +40,7 @@ class PurePursuit(Node):
         self.pose_sub = self.create_subscription(Odometry,pose_topic, self.pose_callback, 10)
         self.goal_marker_pub = self.create_publisher(Marker, 'goal_point', 5)
         self.init_markers(self.waypoints)        
-        self.lookahead_distance = 0.7
+        self.lookahead_distance = 1.2
         self.drive_pub = self.create_publisher(AckermannDriveStamped, drive_topic, 10)
 
         # TODO: create ROS subscribers and publishers
@@ -114,7 +114,7 @@ class PurePursuit(Node):
             dist = self.calc_dist(pose_msg, pt)
             
         print(pt)
-        # self.publish_waypoint(pt)
+        self.publish_waypoint(pt)
 
         
         # TODO: calculate curvature/steering angle

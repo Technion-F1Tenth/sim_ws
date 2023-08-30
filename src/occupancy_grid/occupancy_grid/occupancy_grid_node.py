@@ -21,9 +21,9 @@ class OccupancyGridNode(Node):
                 ('map_height',30),
                 ('map_width',40),
                 ('resolution', 0.1),
-                ('laser_frame', 'ego_racecar/laser'),
+                ('laser_frame', '/ego_racecar/laser'),
                 ('laser_topic', '/scan'),
-                ('odom_topic', 'ego_racecar/odom'),
+                ('odom_topic', '/ego_racecar/odom'),
                 ('map_topic', '/occupancy_grid'),
 
 
@@ -31,8 +31,8 @@ class OccupancyGridNode(Node):
         )        
 
         self.scan_sub = self.create_subscription(LaserScan, self.get_parameter('laser_topic').value, self.scan_callback, 10)
-        self.odom_sub = self.create_subscription(Odometry, self.get_parameter('odom_topic') , self.odom_callback, 10)
-        self.occupancy_grid_pub = self.create_publisher(OccupancyGrid, self.get_parameter('map_topic'), 10)
+        self.odom_sub = self.create_subscription(Odometry, self.get_parameter('odom_topic').value , self.odom_callback, 10)
+        self.occupancy_grid_pub = self.create_publisher(OccupancyGrid, self.get_parameter('map_topic').value, 10)
         self.curr_orientation = None
         self.curr_pos = None
         self.width = self.get_parameter('map_width').value
