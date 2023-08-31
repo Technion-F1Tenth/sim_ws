@@ -5,7 +5,8 @@ def generate_launch_description():
     params = [
             {'speed':0.4},
             {'K_P':0.6},
-            {'file_name':'courtyard_waypoints.csv'}
+            {'lookahead_distance':0.7},
+            {'file_name':'lasthoorah.csv'}
     ]
     print("Starting Pure Pursuit node with the following parameters")
     for element in params:

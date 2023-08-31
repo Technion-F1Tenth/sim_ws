@@ -9,6 +9,7 @@ from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
 from os.path import expanduser
 from visualization_msgs.msg import Marker, MarkerArray
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Point, PoseStamped, Pose, PointStamped, PoseArray
 import math
 import tf_transformations
 
@@ -28,11 +29,11 @@ class PurePursuit(Node):
         super().__init__('pure_pursuit_node')
         
         pose_topic = 'ego_racecar/odom'
-        drive_topic = '/drive'
+        drive_topic = '/pure_pursuit_drive'
 
-        self.declare_parameter('speed', 0.4)
+        self.declare_parameter('speed', 0.1)
         self.declare_parameter('K_P', 0.5)
-        
+        self.declare_parameter('lookahead_distance', 0.7)
         self.declare_parameter('file_name', rclpy.Parameter.Type.STRING)
 
         self.waypoints = np.genfromtxt(home+'/sim_ws/wps/'+str(self.get_parameter('file_name').get_parameter_value().string_value), delimiter=',')
@@ -40,10 +41,20 @@ class PurePursuit(Node):
         self.pose_sub = self.create_subscription(Odometry,pose_topic, self.pose_callback, 10)
         self.goal_marker_pub = self.create_publisher(Marker, 'goal_point', 5)
         self.init_markers(self.waypoints)        
-        self.lookahead_distance = 1.2
+        self.lookahead_distance = self.get_parameter('lookahead_distance').get_parameter_value().double_value
         self.drive_pub = self.create_publisher(AckermannDriveStamped, drive_topic, 10)
 
+        self.plan_sub = self.create_subscription(PoseArray, '/new_path_pose', self.reset_waypoints, 10)
         # TODO: create ROS subscribers and publishers
+
+    def reset_waypoints(self, data):
+        self.waypoints = []
+        for e in data.poses:
+            self.waypoints.append([e.position.x, e.position.y, e.orientation.x, e.orientation.y])
+        self.init_markers(self.waypoints)
+        self.get_logger().info("Waypoints Reset")
+        print("Waypoints Reset")
+
 
     def init_markers(self, data):
         marker_count = 0
@@ -83,6 +94,7 @@ class PurePursuit(Node):
                 best_distance = distance
                 best_index=index
         return best_index
+
     def get_velocity(self, steering_angle):
         return float(self.get_parameter('speed').get_parameter_value().double_value)
     def calc_dist(self, pose_msg, element):
