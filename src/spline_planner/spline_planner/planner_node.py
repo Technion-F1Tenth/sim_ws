@@ -33,9 +33,6 @@ class PlannerNode(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('map_height',30),
-                ('map_width',40),
-                ('resolution', 0.1),
                 ('laser_frame', 'ego_racecar/base_link'),
                 ('local_frame', 'occupancy_grid'),
                 ('global_frame', 'map'),
