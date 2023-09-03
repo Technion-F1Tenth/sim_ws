@@ -36,7 +36,10 @@ class PurePursuit(Node):
         self.declare_parameter('lookahead_distance', 0.7)
         self.declare_parameter('file_name', rclpy.Parameter.Type.STRING)
 
-        self.waypoints = np.genfromtxt(home+'/sim_ws/wps/'+str(self.get_parameter('file_name').get_parameter_value().string_value), delimiter=',')
+        self.base_waypoints = np.genfromtxt(home+'/sim_ws/wps/'+str(self.get_parameter('file_name').get_parameter_value().string_value), delimiter=',')
+
+        self.waypoints = self.base_waypoints   
+
         self.marker_pub = self.create_publisher(MarkerArray, 'waypoint_array', 5)
         self.pose_sub = self.create_subscription(Odometry,pose_topic, self.pose_callback, 10)
         self.goal_marker_pub = self.create_publisher(Marker, 'goal_point', 5)
@@ -46,7 +49,6 @@ class PurePursuit(Node):
 
         self.plan_sub = self.create_subscription(PoseArray, '/new_path_pose', self.reset_waypoints, 10)
         # TODO: create ROS subscribers and publishers
-
     def reset_waypoints(self, data):
         self.waypoints = []
         for e in data.poses:
@@ -84,10 +86,17 @@ class PurePursuit(Node):
             marker_count += 1
         print(marker_count)
         self.marker_pub.publish(marker_array_msg)
+    def brake(self):
+        ackermann_message = AckermannDriveStamped()
+        ackermann_message.drive.steering_angle = 0.0
+        ackermann_message.drive.speed = 0.0
+        self.drive_pub.publish(ackermann_message)
+
 
     def find_closest_waypoint_index(self, pose_msg):
         best_distance = math.inf
         best_index = 0
+
         for index,element in enumerate(self.waypoints):
             distance = self.calc_dist(pose_msg, element)
             if(distance<best_distance):
@@ -115,35 +124,44 @@ class PurePursuit(Node):
         # move further away from the waypoint until the distance is too much
         closest_index = self.find_closest_waypoint_index(pose_msg)
         idx = closest_index
-        pt = self.waypoints[idx]
-        dist = self.calc_dist(pose_msg, pt)
-        while dist < self.lookahead_distance:
-
-            idx+=1
-            if(idx >= len(self.waypoints)):
-                idx=0
-            pt=self.waypoints[idx]
-            dist = self.calc_dist(pose_msg, pt)
+        if idx == len(self.waypoints)-1:
+            self.waypoints = self.base_waypoints
             
-        print(pt)
-        self.publish_waypoint(pt)
+        if (not math.isnan(idx))  and idx < len(self.waypoints):
+            pt = self.waypoints[idx]
+            dist = self.calc_dist(pose_msg, pt)
+            while dist < self.lookahead_distance:
+                idx+=1
+                if(idx >= len(self.waypoints)):
+                    idx=0
+                pt=self.waypoints[idx]
+                dist = self.calc_dist(pose_msg, pt)
 
-        
-        # TODO: calculate curvature/steering angle
-        
-        lookahead_angle = math.atan2(pt[1] - position[1], pt[0] - position[0])
-        #print(lookahead_angle)
-        heading = tf_transformations.euler_from_quaternion(quaternion)[2]
-        del_y = dist * math.sin(lookahead_angle - heading)
-        curvature = 2.0*del_y/(math.pow(dist, 2))
-        steering_angle = float(self.get_parameter('K_P').get_parameter_value().double_value)* curvature
 
-        ackermann_message = AckermannDriveStamped()
-        ackermann_message.drive.steering_angle = steering_angle
-        ackermann_message.drive.speed = self.get_velocity(steering_angle)
-        self.drive_pub.publish(ackermann_message)
-        # TODO: publish drive message, don't forget to limit the steering angle.
+            
+            # self.publish_waypoint(pt)
 
+            
+            # TODO: calculate curvature/steering angle
+            
+            lookahead_angle = math.atan2(pt[1] - position[1], pt[0] - position[0])
+            #print(lookahead_angle)
+            heading = tf_transformations.euler_from_quaternion(quaternion)[2]
+            del_y = dist * math.sin(lookahead_angle - heading)
+            curvature = 2.0*del_y/(math.pow(dist, 2))
+            steering_angle = float(self.get_parameter('K_P').get_parameter_value().double_value)* curvature
+
+            ackermann_message = AckermannDriveStamped()
+            ackermann_message.drive.steering_angle = steering_angle
+            ackermann_message.drive.speed = self.get_velocity(steering_angle)
+            self.drive_pub.publish(ackermann_message)
+        else:
+            # print("No waypoints found")
+            self.get_logger().info("No waypoints found")
+            ackermann_message = AckermannDriveStamped()
+            ackermann_message.drive.steering_angle = 0.0
+            ackermann_message.drive.speed = 0.0
+            self.drive_pub.publish(ackermann_message)
     def publish_waypoint(self,pt):
         marker = Marker()
         marker.type = Marker.SPHERE
