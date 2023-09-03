@@ -1,0 +1,6 @@
+pure_pursuit_node:
+  ros__parameters:
+    speed: 0.4
+    K_P: 0.3
+    lookahead_distance: 0.3
+    file_name: 'tame_courtyard.csv'

@@ -19,8 +19,7 @@ home = expanduser('~')
 
 from .spline_planner import CubicSplinePlanner  
 
-KP = 0.5
-SLOW_VEL = 0.6
+
 class PlannerNode(Node):
     """ 
     Implement Pure Pursuit on the car
@@ -120,6 +119,7 @@ class PlannerNode(Node):
             except:
                 print("No Clean Splines")
                 self.iterations+=1
+                
                 self.goal_callback(goal_msg) # TODO: See if this is smart?
                 return
             if len(interpolated_splines) == 0 and self.iterations > self.get_parameter('MAX_ITER').value:
