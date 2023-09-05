@@ -19,12 +19,6 @@ home = expanduser('~')
 KP = 0.5
 SLOW_VEL = 0.6
 class PurePursuit(Node):
-    """ 
-    Implement Pure Pursuit on the car
-    This is just a template, you are free to implement your own node!
-    """
-
-
     def __init__(self):
         super().__init__('pure_pursuit_node')
         
@@ -43,49 +37,41 @@ class PurePursuit(Node):
         self.marker_pub = self.create_publisher(MarkerArray, 'waypoint_array', 5)
         self.pose_sub = self.create_subscription(Odometry,pose_topic, self.pose_callback, 10)
         self.goal_marker_pub = self.create_publisher(Marker, 'goal_point', 5)
-        self.init_markers(self.waypoints)        
         self.lookahead_distance = self.get_parameter('lookahead_distance').get_parameter_value().double_value
         self.drive_pub = self.create_publisher(AckermannDriveStamped, drive_topic, 10)
-
+        self.path_pose_publisher = self.create_publisher(PoseArray, '/new_path_pose', 10)
         self.plan_sub = self.create_subscription(PoseArray, '/new_path_pose', self.reset_waypoints, 10)
         # TODO: create ROS subscribers and publishers
+        self.init_markers(self.waypoints)        
+
+        self.self_reset = False
+
     def reset_waypoints(self, data):
         self.waypoints = []
         for e in data.poses:
-            self.waypoints.append([e.position.x, e.position.y, e.orientation.x, e.orientation.y])
-        self.init_markers(self.waypoints)
+            self.waypoints.append([e.position.x, e.position.y, 0, 1.0])
+
+        # self.init_markers(self.waypoints)
         self.get_logger().info("Waypoints Reset")
-        print("Waypoints Reset")
 
 
     def init_markers(self, data):
-        marker_count = 0
-        marker_array_msg = MarkerArray()
+        pose_array = PoseArray()
+        pose_array.header.frame_id = 'map'
         for e in data:
-            marker = Marker()
-            marker.type = Marker.SPHERE
-            marker.id = marker_count
-            marker.pose.position.x = e[0]
-            marker.pose.position.y = e[1]
-            marker.pose.position.z = 0.0
-            marker.pose.orientation.x = e[2]
-            marker.pose.orientation.y = e[3]
-            marker.pose.orientation.z = 0.0
-            marker.pose.orientation.w = 0.0
-            marker.scale.x = 0.05
-            marker.scale.y = 0.05
-            marker.scale.z = 0.05
-            marker.header.frame_id = 'map'
-            marker.color.r = 0.0
-            marker.color.g = 2.0
-            marker.color.b = 0.0
-            marker.color.a = 0.8
-            marker_array_msg.markers.append(marker) 
-
+            pose = Pose()
             
-            marker_count += 1
-        print(marker_count)
-        self.marker_pub.publish(marker_array_msg)
+            pose.position.x = e[0]
+            pose.position.y = e[1]
+            pose.position.z = 0.0
+            pose.orientation.x = 0.0
+            pose.orientation.y = 0.0
+            pose.orientation.z = 0.0
+            pose.orientation.w = 1.0
+            
+            pose_array.poses.append(pose)
+            self.path_pose_publisher.publish(pose_array)
+        
     def brake(self):
         ackermann_message = AckermannDriveStamped()
         ackermann_message.drive.steering_angle = 0.0
@@ -139,7 +125,7 @@ class PurePursuit(Node):
 
 
             
-            # self.publish_waypoint(pt)
+            self.publish_waypoint(pt)
 
             
             # TODO: calculate curvature/steering angle
@@ -157,11 +143,7 @@ class PurePursuit(Node):
             self.drive_pub.publish(ackermann_message)
         else:
             # print("No waypoints found")
-            self.get_logger().info("No waypoints found")
-            ackermann_message = AckermannDriveStamped()
-            ackermann_message.drive.steering_angle = 0.0
-            ackermann_message.drive.speed = 0.0
-            self.drive_pub.publish(ackermann_message)
+            self.waypoints = self.base_waypoints
     def publish_waypoint(self,pt):
         marker = Marker()
         marker.type = Marker.SPHERE
