@@ -1,6 +1,6 @@
 /planner_node:
   ros__parameters:
-    INNER_POINTS: 20
+    INNER_POINTS: 100
     M: 20
     MAX_ITER: 10
     N: 1

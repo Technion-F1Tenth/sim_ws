@@ -40,7 +40,7 @@ class PlannerNode(Node):
                 ('goal_topic', '/goal_pose'),
                 ('M', 20),
                 ('N', 1),
-                ('INNER_POINTS', 20),
+                ('INNER_POINTS', 100),
                 ('MAX_ITER', 10),
             ]
         )    

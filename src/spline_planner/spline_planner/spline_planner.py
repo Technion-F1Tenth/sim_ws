@@ -12,8 +12,16 @@ class CubicSplinePlanner:
         self.points = self.generate_random_points()
 
     def generate_random_points(self):
-        points = [[np.random.randint(0, self.map.shape[0]-1, 2) for i in range(self.N)] for j in range(self.M)]
+        path_length = self.goal[1] - self.start[1]
+        points = []
+        for i in range(self.M):
+            point = []
+            for j in range(self.N):
+                point.append([np.random.randint(0,self.map.shape[0]-1), path_length//(self.N+1) * (j+1)])
+            points.append(point)
         points = np.array(points)
+        #print(points)
+        # Sort points by x value
         for i in range(len(points)):
             points[i] = points[i][points[i][:,0].argsort()]
         return points
