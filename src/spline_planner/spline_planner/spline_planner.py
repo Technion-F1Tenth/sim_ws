@@ -1,4 +1,4 @@
-from scipy import interpolate
+from scipy import interpolate, ndimage
 import numpy as np
 import matplotlib.pyplot as plt
 class CubicSplinePlanner:
@@ -10,6 +10,7 @@ class CubicSplinePlanner:
         self.N = N
         self.INNER_POINTS = INNER_POINTS
         self.points = self.generate_random_points()
+        self.distance_threshold = 0.15
 
     def generate_random_points(self):
         path_length = self.goal[1] - self.start[1]
@@ -30,6 +31,8 @@ class CubicSplinePlanner:
     def interpolate_splines(self):
         interpolated_splines = []
         costs_splines = []
+        expanded_map = self.expand_obstacles()
+
         for possible_spline in self.points:
             possible_spline = np.vstack((self.start, possible_spline, self.goal))
 
@@ -53,6 +56,7 @@ class CubicSplinePlanner:
 
             spline_points = np.column_stack((new_x, new_y))
             spline_clean = True
+            
             for point in spline_points:
                 if self.is_point_in_obstacle(point):
                     spline_clean = False
@@ -65,16 +69,37 @@ class CubicSplinePlanner:
         best_spline = interpolated_splines[np.argmin(costs_splines)]
         return interpolated_splines, costs_splines, best_spline
 
-    def is_point_in_obstacle(self, point):
-        x, y = point.astype(int)
-        if x > self.map.shape[0] or y > self.map.shape[1]:
-            return True
-        if x < 0 or y < 0:
-            return True
-        try:
-            return self.map[x][y] == 100
-        except IndexError:
-            return True
+    def is_point_in_obstacle(self, point, map=None):
+        if map is None:
+            x, y = point.astype(int)
+            if x > self.map.shape[0] or y > self.map.shape[1]:
+                return True
+            if x < 0 or y < 0:
+                return True
+            try:
+                return self.map[x][y] == 100
+            except IndexError:
+                return True
+        else:
+            x, y = point.astype(int)
+            if x > map.shape[0] or y > map.shape[1]:
+                return True
+            if x < 0 or y < 0:
+                return True
+            try:
+                return map[x][y] == 100
+            except IndexError:
+                return True
+
+
+    def expand_obstacles(self):
+        expanded_map = np.copy(self.map)
+        edt = ndimage.distance_transform_edt(1-expanded_map)
+        for i in range(expanded_map.shape[0]):
+            for j in range(expanded_map.shape[1]):
+                if edt[i,j] <= self.distance_threshold:
+                    expanded_map[i,j] = 100
+        return expanded_map
 
     def plot_splines(self):
         interpolated_splines, costs_splines,best_spline = self.interpolate_splines()

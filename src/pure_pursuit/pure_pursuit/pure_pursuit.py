@@ -12,6 +12,7 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Point, PoseStamped, Pose, PointStamped, PoseArray
 import math
 import tf_transformations
+from std_msgs.msg import String
 
 
 home = expanduser('~')
@@ -24,11 +25,13 @@ class PurePursuit(Node):
         
         pose_topic = 'ego_racecar/odom'
         drive_topic = '/pure_pursuit_drive'
+        command_topic = '/behavior_command'
 
         self.declare_parameter('speed', 0.1)
         self.declare_parameter('K_P', 0.5)
         self.declare_parameter('lookahead_distance', 0.7)
         self.declare_parameter('file_name', rclpy.Parameter.Type.STRING)
+
 
         self.base_waypoints = np.genfromtxt(home+'/sim_ws/wps/'+str(self.get_parameter('file_name').get_parameter_value().string_value), delimiter=',')
 
@@ -42,6 +45,7 @@ class PurePursuit(Node):
         self.path_pose_publisher = self.create_publisher(PoseArray, '/new_path_pose', 10)
         self.plan_sub = self.create_subscription(PoseArray, '/new_path_pose', self.reset_waypoints, 10)
         # TODO: create ROS subscribers and publishers
+        self.behavior_pub = self.create_publisher(String, command_topic, 10)
         self.init_markers(self.waypoints)        
 
         self.self_reset = False
@@ -112,6 +116,9 @@ class PurePursuit(Node):
         idx = closest_index
         if idx == len(self.waypoints)-1:
             self.waypoints = self.base_waypoints
+            command = String()
+            command.data = "RESET"
+            self.behavior_pub.publish(command)
             
         if (not math.isnan(idx))  and idx < len(self.waypoints):
             pt = self.waypoints[idx]
@@ -144,6 +151,9 @@ class PurePursuit(Node):
         else:
             # print("No waypoints found")
             self.waypoints = self.base_waypoints
+            command = String()
+            command.data = "RESET"
+            self.behavior_pub.publish(command)
     def publish_waypoint(self,pt):
         marker = Marker()
         marker.type = Marker.SPHERE

@@ -48,10 +48,12 @@ def generate_launch_description():
         executable="behavior_node",
         name='behavior_node',
     )
-    ld.add_action(behavior_node)
+    
     ld.add_action(spline_planner_node)
     ld.add_action(pure_pursuit_node)
     ld.add_action(occupancy_grid_node)
+    ld.add_action(behavior_node)
+
 
 
     return ld

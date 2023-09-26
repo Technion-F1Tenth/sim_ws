@@ -68,10 +68,10 @@ class OccupancyGridNode(Node):
             y = dist[d]*np.sin(angles[d]) # y coordinate in lidar frame
 
             # Obstacle in discretized coordinate frame.
-            y_grid = int(y/self.resolution) # x coordinate in grid frame
+            y_grid = int(y/self.resolution) + self.height//2  # x coordinate in grid frame
             x_grid = int(x/self.resolution) # y coordinate in grid frame
 
-            y_grid = y_grid + self.height//2
+            
 
             if self.in_grid(x_grid, y_grid):
                 grid[y_grid, x_grid] = 100
