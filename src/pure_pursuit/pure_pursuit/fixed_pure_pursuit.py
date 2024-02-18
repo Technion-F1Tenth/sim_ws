@@ -42,7 +42,7 @@ class PurePursuit(Node):
                 ("file_name", "spk"),
                 ("K_P", 1.0),
                 ("lookahead_distance", 3.0),
-                ("base_velocity", 2.0),
+                ("base_velocity", 1.0),
             ],
         )
         print("Parameters in use")
@@ -57,7 +57,7 @@ class PurePursuit(Node):
             MarkerArray, "/waypoint_array", 10
         )
         self.goal_marker_pub = self.create_publisher(Marker, "/goal_point", 10)
-        self.init_markers(self.waypoints)
+        # self.init_markers(self.waypoints)
 
     def calc_dist(self, pose_msg, element):
         return math.sqrt(
@@ -136,7 +136,7 @@ class PurePursuit(Node):
         marker = Marker()
         marker.type = Marker.SPHERE
         marker.id = 0
-        marker.lifetime = rclpy.duration.Duration(seconds=10).to_msg()
+        # marker.lifetime = rclpy.duration.Duration(seconds=10).to_msg()
         marker.pose.position.x = pt[0]
         marker.pose.position.y = pt[1]
         marker.pose.position.z = 0.00
