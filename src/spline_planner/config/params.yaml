@@ -1,0 +1,13 @@
+/planner_node:
+  ros__parameters:
+    INNER_POINTS: 100
+    M: 20
+    MAX_ITER: 10
+    N: 1
+    global_frame: map
+    goal_topic: /goal_pose
+    laser_frame: ego_racecar/base_link
+    local_frame: occupancy_grid
+    map_topic: /occupancy_grid
+    odom_topic: /ego_racecar/odom
+    use_sim_time: false
