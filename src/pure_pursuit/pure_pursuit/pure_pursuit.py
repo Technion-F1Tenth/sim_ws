@@ -29,7 +29,7 @@ class PurePursuit(Node):
                 ("drive_topic", "/drive"),
                 ("waypoint_viz_topic", "/waypoint_array"),
                 ("goalpoint_viz_topic", "/waypoint_array"),
-                ("file_name", "points_map_in_the_lab_cleaned.csv"),
+                ("file_name", "Spielberg_clean.csv"),
                 ("K_P", 0.2),
                 ("lookahead_distance", 0.45),
                 ("base_velocity", 1.0),
