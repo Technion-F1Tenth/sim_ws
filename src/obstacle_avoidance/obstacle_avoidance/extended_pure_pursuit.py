@@ -6,19 +6,14 @@ from rclpy.node import Node
 import numpy as np
 from sensor_msgs.msg import LaserScan
 from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
-from std_msgs.msg import String
-import sys
-sys.path.insert(0, '/sim_ws/src/')
-from common import Behavior
-
-
-SLOW_MODE = False
+SLOW_MODE = True
 MAX_SPEED = 7.0
 MIN_SPEED = 1.0
 MIN_THRESHOLD_FOR_CORNER = 1.
 CORNER_DETECTION_RESOLUTION = 2
 CAR_WIDTH = 0.5
-class ReactiveFollowGap(Node):
+
+class ExtendedPurePursuit(Node):
     """ 
     Implement Wall Following on the car
     This is just a template, you are free to implement your own node!
@@ -31,18 +26,31 @@ class ReactiveFollowGap(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('bubble_radius', 50),
+                ('bubble_radius', 0.5),
                 ('laser_topic', '/scan'),
                 ('drive_topic', '/drive'),
-                ('slow_mode', False),
-                ('max_speed', 6.0),
+                ('slow_mode', True),
+                ('max_speed', 7.0),
                 ('min_speed', 1.0),
                 ('min_threshold_for_corner', 1.),
                 ('corner_detection_resolution', 2),
                 ('car_width', 0.5),
-                ("state_topic", "/behavior_state"),
+                ("odom_topic", "/ego_racecar/odom"),
+                ("map_topic", "/occupancy_grid"),
+                ("drive_topic", "/drive"),
+                ("waypoint_viz_topic", "/waypoint_array"),
+                ("goalpoint_viz_topic", "/waypoint_array"),
+                ("file_name", "Spielberg_clean.csv"),
+                ("K_P", 0.2),
+                ("lookahead_distance", 0.45),
+                ("base_velocity", 0.2),
+                ("new_path_topic", "/new_path_pose")
             ]
         )        
+    
+        self.pose_sub = self.create_subscription(
+            Odometry, self.get_parameter("odom_topic").get_parameter_value().string_value, self.odom_callback, 10
+        )
         self.car_width = self.get_parameter('car_width').value
         self.corner_detection_resolution = self.get_parameter('corner_detection_resolution').value
         self.min_threshold_for_corner = self.get_parameter('min_threshold_for_corner').value
@@ -57,17 +65,7 @@ class ReactiveFollowGap(Node):
         self.integral = 0.0
         self.prev_best_point = None
         
-        self.behavior_state_sub = self.create_subscription(String, self.get_parameter('state_topic').value, self.behavior_state_callback, 10)
-        self.active = False # Change to true if running without behavior node
-        self.prev_angle = 0
-
-    def behavior_state_callback(self, msg):
-        if msg.data == Behavior.REACTIVE.name:
-            self.active = True
-        else:
-            self.active = False
-        print(msg)
-
+        # TODO: Publish to drive
 
     def preprocess_lidar(self, ranges,lidar_min, lidar_max, angle_increment):
         """ Preprocess the LiDAR scan array. Expert implementation includes:
@@ -78,14 +76,14 @@ class ReactiveFollowGap(Node):
         max_angle = 90 * (math.pi/180) 
         min_idx = int(math.floor((min_angle - lidar_min)/angle_increment))
         max_idx = int(math.floor((max_angle - lidar_min)/angle_increment))
-        threshold = 1.5
+        threshold = 1.
         max_range  = 5.
         #print(min_idx, max_idx)
         proc_ranges = np.array(ranges[min_idx:max_idx])
+        
         proc_ranges[proc_ranges == np.inf] = threshold 
         proc_ranges[proc_ranges > max_range] = max_range 
-        proc_ranges[proc_ranges < threshold] = 0
-        
+        proc_ranges[proc_ranges < threshold] = 0 
 
         # kernel_size = 10
         # kernel = np.ones(kernel_size) / kernel_size
@@ -175,11 +173,10 @@ class ReactiveFollowGap(Node):
 
     
     def get_velocity(self, steering_angle, adaptive=True):
-        sigmoid = lambda x: 1/(1+np.exp(-x))
         if self.slow_mode:
             return self.min_speed
         if adaptive:
-            velocity = max(2*self.max_speed * abs(1-sigmoid(2* abs(steering_angle))), 0.8) # Velocity varies smoothly with steering angle
+            velocity = max(self.max_speed - abs(np.rad2deg(steering_angle))/50, 0.8) # Velocity varies smoothly with steering angle
             # print('Velocity: ' + str(velocity))
             return velocity
         if abs(steering_angle) < np.deg2rad(5):
@@ -198,6 +195,7 @@ class ReactiveFollowGap(Node):
             velocity = 1.4
 
         velocity = max(MAX_SPEED-(2/(1+np.exp(-5*np.abs(steering_angle)/25))-1)*(MAX_SPEED-MIN_SPEED), MIN_SPEED)#-\frac{4}{\left(d\right)^{2}},v_{n}\right)
+
         return velocity
          
         
@@ -207,8 +205,6 @@ class ReactiveFollowGap(Node):
         """
         """ Process each LiDAR scan as per the Follow Gap algorithm & publish an AckermannDriveStamped Message
         """
-        if not self.active: 
-            return
         ranges = data.ranges
         (proc_ranges, min_idx, max_idx) = self.preprocess_lidar(ranges, data.angle_min, data.angle_max, data.angle_increment)
         #Find closest point to LiDAR
@@ -236,20 +232,17 @@ class ReactiveFollowGap(Node):
         self.integral+=error
         self.current_steeering_angle = error*K_P + self.current_steeering_angle + self.integral * K_I
         '''
-        derivative = self.current_steeering_angle - self.prev_angle
         print(self.current_steeering_angle)
         ackermann_message = AckermannDriveStamped()
-        ackermann_message.drive.steering_angle = 0.8*self.current_steeering_angle 
+        ackermann_message.drive.steering_angle = self.current_steeering_angle
         ackermann_message.drive.speed = self.get_velocity(self.current_steeering_angle)
-        self.prev_angle = self.current_steeering_angle
-        print("Velocity: ", ackermann_message.drive.speed)
         self.drive_pub.publish(ackermann_message)
 
 
 def main(args=None):
     rclpy.init(args=args)
     print("WallFollow Initialized")
-    reactive_node = ReactiveFollowGap()
+    reactive_node = ExtendedPurePursuit()
     rclpy.spin(reactive_node)
 
     reactive_node.destroy_node()

@@ -14,7 +14,6 @@ from geometry_msgs.msg import Point, PoseStamped, Pose, PointStamped, PoseArray
 import math
 import tf_transformations
 from std_msgs.msg import String
-from common import Behavior
 
 home = expanduser("~")
 
@@ -36,8 +35,7 @@ class PurePursuit(Node):
                 ("K_P", 0.2),
                 ("lookahead_distance", 0.45),
                 ("base_velocity", 0.2),
-                ("new_path_topic", "/new_path_pose"),
-                ("behavior_topic", "/behavior_state"),
+                ("new_path_topic", "/new_path_pose")
             ],
         )
         self.pose_sub = self.create_subscription(
@@ -53,8 +51,6 @@ class PurePursuit(Node):
         # self.init_markers(self.waypoints)
         self.new_path_sub = self.create_subscription(PoseArray, self.get_parameter("new_path_topic").get_parameter_value().string_value, self.new_path_callback, 10)
         self.last_closest_index = 0
-        self.behavior_sub = self.create_subscription(String, self.get_parameter("behavior_topic").get_parameter_value().string_value, self.behavior_callback, 10)
-        self.active = False # Change to true if running without behavior node
 
     def new_path_callback(self, data):
         new_waypoints = []
@@ -96,8 +92,6 @@ class PurePursuit(Node):
         return self.get_parameter("base_velocity").get_parameter_value().double_value
 
     def odom_callback(self, pose_msg):
-        if not self.active:
-            return
         lookahead_distance = (
             self.get_parameter("lookahead_distance").get_parameter_value().double_value
         )
