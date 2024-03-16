@@ -44,7 +44,7 @@ class BehaviorNode(Node):
                 ("offset_points", 3),
                 ("ttc_threshold", 0.2),
                 ("state_topic", "/behavior_state"), 
-                ("timeout_threshold_ns", 0.2 * 10**9),
+                ("timeout_threshold_ns", 1 * 10**9),
                 ],
         )
         self.get_logger().info("Initializing safety behavior node")
@@ -146,6 +146,7 @@ class BehaviorNode(Node):
         will_crash = False
         min_ttc = np.inf
         min_dist = min(self.laser_scan.ranges)
+        ellapsed_time = self.get_clock().now().nanoseconds - self.last_drive_msg_time.nanoseconds
         for index, distance in enumerate(self.laser_scan.ranges):
             angle = self.laser_scan.angle_min + index * self.laser_scan.angle_increment
             projected_vel = self.speed * math.cos(angle)  # Corrected projected velocity
@@ -153,10 +154,11 @@ class BehaviorNode(Node):
             if projected_vel != 0:
                 time_to_crash = distance / projected_vel
                 min_ttc = min(time_to_crash, min_ttc)
-                if time_to_crash < self.ttc_threshold or distance < 0.2:
+                if time_to_crash < self.ttc_threshold or distance < 0.2 or ellapsed_time > self.get_parameter("timeout_threshold_ns").get_parameter_value().integer_value:
                     will_crash = True
 
-        print(min_ttc, min_dist)
+        print(min_ttc, min_dist, ellapsed_time)
+
 
         return not will_crash
 
@@ -220,10 +222,7 @@ class BehaviorNode(Node):
             self.get_logger().info("Not safe to drive")
             brake_msg = AckermannDriveStamped()
             self.drive_pub.publish(brake_msg)
-        if self.get_clock().now().nanoseconds-self.last_drive_msg_time.nanoseconds > self.get_parameter("timeout_threshold_ns").get_parameter_value().integer_value:
-            self.get_logger().info("Timeout")
-            brake_msg = AckermannDriveStamped()
-            self.drive_pub.publish(brake_msg)
+        
 
     def poses_callback(self, msg):
         pass
