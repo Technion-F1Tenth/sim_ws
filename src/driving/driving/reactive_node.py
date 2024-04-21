@@ -6,11 +6,11 @@ from rclpy.node import Node
 import numpy as np
 from sensor_msgs.msg import LaserScan
 from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
-from std_msgs.msg import String
+from std_msgs.msg import String,Float64
 import sys
-sys.path.insert(0, '/sim_ws/src/')
+sys.path.insert(0, "/sim_ws/src")
 from common import Behavior
-
+from visualization_msgs.msg import MarkerArray, Marker
 
 SLOW_MODE = False
 MAX_SPEED = 7.0
@@ -31,34 +31,59 @@ class ReactiveFollowGap(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('bubble_radius', 50),
+                ('bubble_radius', 0.3),
                 ('laser_topic', '/scan'),
                 ('drive_topic', '/drive'),
                 ('slow_mode', False),
-                ('max_speed', 6.0),
-                ('min_speed', 1.0),
-                ('min_threshold_for_corner', 1.),
-                ('corner_detection_resolution', 2),
-                ('car_width', 0.5),
+                ('max_speed', 4.0),
+                ('min_speed', 0.8),
+                ('max_range', 5.0),
+                ('car_width', 0.3),
                 ("state_topic", "/behavior_state"),
-            ]
-        )        
-        self.car_width = self.get_parameter('car_width').value
-        self.corner_detection_resolution = self.get_parameter('corner_detection_resolution').value
-        self.min_threshold_for_corner = self.get_parameter('min_threshold_for_corner').value
-        self.min_speed = self.get_parameter('min_speed').value
-        self.max_speed = self.get_parameter('max_speed').value
-        self.slow_mode = self.get_parameter('slow_mode').value
+                ("velocity_topic", "/follow_the_gap_velocity"),
+                ("threshold_topic", "/follow_the_gap_threshold"),
+                ("safety_factor", 1.6),
+                ("state_topic", "/behavior_state"),
+                ("max_lidar_range", 5.0),
+                ("disparity_threshold", 0.1),
+                ("marker_topic", "/chosen_point"),
+                ("angle_clip", 3/4 * math.pi)
+            ],
+        )
+
+        self.STEERING_SENSITIVITY = 1.0
+        self.SAFETY_PERCENTAGE = self.get_parameter("safety_factor").value
+        self.QUADRANT_FACTOR = 3.5
+        self.DIFFERENCE_THRESHOLD = self.get_parameter("disparity_threshold").value
+        self.car_width = self.get_parameter("car_width").value
         
-        self.bubble_radius = self.get_parameter('bubble_radius').value
-        self.create_subscription(LaserScan, self.get_parameter('laser_topic').value, self.lidar_callback,10)
-        self.drive_pub = self.create_publisher(AckermannDriveStamped, self.get_parameter('drive_topic').value, 10)
+        self.min_speed = self.get_parameter("min_speed").value
+        self.max_speed = self.get_parameter("max_speed").value
+        self.slow_mode = self.get_parameter("slow_mode").value
+        self.max_lidar_range = self.get_parameter("max_lidar_range").value
+        self.angle_clip = self.get_parameter("angle_clip").value
+
+        self.bubble_radius = self.get_parameter("bubble_radius").value
+        self.create_subscription(
+            LaserScan, self.get_parameter("laser_topic").value, self.lidar_callback, 10
+        )
+        self.drive_pub = self.create_publisher(
+            AckermannDriveStamped, self.get_parameter("drive_topic").value, 10
+        )
+        self.marker_pub = self.create_publisher(
+            Marker, self.get_parameter("marker_topic").value, 10
+        )
         self.current_steeering_angle = 0.0
         self.integral = 0.0
         self.prev_best_point = None
-        
-        self.behavior_state_sub = self.create_subscription(String, self.get_parameter('state_topic').value, self.behavior_state_callback, 10)
-        self.active = False # Change to true if running without behavior node
+
+        self.behavior_state_sub = self.create_subscription(
+            String,
+            self.get_parameter("state_topic").value,
+            self.behavior_state_callback,
+            10,
+        )
+        self.active = True  # Change to true if running without behavior node
         self.prev_angle = 0
 
     def behavior_state_callback(self, msg):
@@ -68,182 +93,120 @@ class ReactiveFollowGap(Node):
             self.active = False
         print(msg)
 
-
-    def preprocess_lidar(self, ranges,lidar_min, lidar_max, angle_increment):
-        """ Preprocess the LiDAR scan array. Expert implementation includes:
-            1.Setting each value to the mean over some window
-            2.Rejecting high values (eg. > 3m)
+    def preprocess_lidar(self, data):
+        """Preprocess the LiDAR scan array. Expert implementation includes:
+        1.Setting each value to the mean over some window
+        2.Rejecting high values (eg. > 3m)
         """
-        min_angle = -90 * (math.pi/180) 
-        max_angle = 90 * (math.pi/180) 
-        min_idx = int(math.floor((min_angle - lidar_min)/angle_increment))
-        max_idx = int(math.floor((max_angle - lidar_min)/angle_increment))
-        threshold = 1.5
-        max_range  = 5.
-        #print(min_idx, max_idx)
-        proc_ranges = np.array(ranges[min_idx:max_idx])
-        proc_ranges[proc_ranges == np.inf] = threshold 
-        proc_ranges[proc_ranges > max_range] = max_range 
-        proc_ranges[proc_ranges < threshold] = 0
-        
+        ranges = data.ranges
+        ranges = np.array(ranges)
+        min_angle = -120 * (math.pi/180) 
+        max_angle = 120 * (math.pi/180) 
+        min_idx = int(math.floor((min_angle - data.angle_min)/data.angle_increment))
+        max_idx = int(math.floor((max_angle - data.angle_min)/data.angle_increment))
+        ranges = np.clip(ranges, 0, 16)
+        eighth = int(len(ranges) / self.QUADRANT_FACTOR)
+        return np.array(ranges[min_idx:max_idx])
 
-        # kernel_size = 10
-        # kernel = np.ones(kernel_size) / kernel_size
-        # data_convolved = np.convolve(proc_ranges, kernel, mode='same')
-        data_convolved = proc_ranges
-        return (data_convolved, min_idx, max_idx)
-        
-    def remove_corners(self, ranges):
-        indicies_to_zero = []
-        i = 0
-        corners_removed = False
-        while i < len(ranges) - 1:
-            if np.abs(ranges[i] - ranges[i+1]) > self.get_parameter('min_threshold_for_corner').value:
-                delta_theta = np.tan(self.car_width / (2 * ranges[i]))
-                if ranges[i] > delta_theta:
-                    min_idx = np.argmin(np.abs(ranges - (ranges[i] - delta_theta)))
-                else:
-                    min_idx = 0
-                if ranges[i] < ranges[-1] - delta_theta:
-                    max_idx =  np.argmin(np.abs(ranges - (ranges[i] + delta_theta)))
-                else:
-                    max_idx = len(ranges) - 1
-                # print(f"len of ranges[min_idx : max_idx] = {ranges[min_idx : max_idx]}")
-                # print(f"len of np.zeros(max_idx-min_idx) = {np.zeros(max_idx-min_idx)}")
-                #print(f"man_idx = {max_idx}, min_idx = {min_idx}")
-                #ranges[min_idx : max_idx] = np.zeros(max_idx-min_idx)
-                indicies_to_zero.append([min_idx, max_idx])
-                
-                i+= max_idx - min_idx
-                corners_removed = True
-            if corners_removed:
-                i += max_idx - min_idx
-            else:
-                i += 1  
-        for indices in indicies_to_zero:
-            min_idx = indices[0]
-            max_idx = indices[1]
-            ranges[min_idx:max_idx] = np.zeros(max_idx-min_idx)
+    def get_differences(self, ranges):
+        differences = [0.0]  # set first element to 0
+        for i in range(1, len(ranges)):
+            differences.append(abs(ranges[i] - ranges[i - 1]))
+        return differences
+
+    def get_disparities(self, differences, threshold):
+        """Gets the indexes of the LiDAR points that were greatly
+        different to their adjacent point.
+        Possible Improvements: replace for loop with numpy array arithmetic
+        """
+        disparities = []
+        for index, difference in enumerate(differences):
+            if difference > threshold:
+                disparities.append(index)
+        return disparities
+
+    def get_num_points_to_cover(self, dist, width):
+        angle = 1.5 * np.arctan(width / (2 * dist))
+        num_points = int(np.ceil(angle / self.radians_per_point))
+        return num_points
+
+    def cover_points(self, num_points, start_idx, cover_right, ranges):
+        new_dist = ranges[start_idx]
+        if cover_right:
+            for i in range(num_points):
+                next_idx = start_idx + 1 + i
+                if next_idx >= len(ranges):
+                    break
+                if ranges[next_idx] > new_dist:
+                    ranges[next_idx] = new_dist
+        else:
+            for i in range(num_points):
+                next_idx = start_idx - 1 - i
+                if next_idx < 0:
+                    break
+                if ranges[next_idx] > new_dist:
+                    ranges[next_idx] = new_dist
         return ranges
 
+    def extend_disparities(self, disparities, ranges, car_width, extra_pct):
 
-    
-    def find_max_gap(self, free_space_ranges):
-        """ 
-        Return the start index & end index of the max gap in free_space_ranges
-        A n-length gap is a n-length series of consecutive non-zero elements in the range
-        """
-        current_start = None
-        current_length = 0
-        max_start = None
-        max_length = 0
-        
-        for i, val in enumerate(free_space_ranges):
-            if val != 0:
-                if current_start is None: # Starts new gap count
-                    current_start = i
-                current_length += 1
-            else: # Ends gap
-                if current_start is not None and current_length > max_length: # largest gap until now
-                    max_start = current_start
-                    max_length = current_length
-                current_start = None
-                current_length = 0
-        
-        if current_start is not None and current_length > max_length: # At the end if the gap hasn't ended and is largest, end it.
-            max_start = current_start
-            max_length = current_length
-        
-        if max_start is None:
-            return None, None # VERY BAD BUT JUST IN CASE. SHOULD THROW AN ERROR
-        else:
-            return max_start, max_start + max_length - 1
-    
-    def find_best_point(self, start_i, end_i, ranges):
-        """Start_i & end_i are start and end indicies of max-gap range, respectively
-        Return index of best point in ranges
-	Naive: Choose the furthest point within ranges and go there
-        """
-        # return (start_i+end_i)/2
-        """Find the optimal point within the identified gap for smooth transition"""
-        
-        try:
-            self.prev_best_point = (start_i+end_i)/2
-            return self.prev_best_point
-        except:
-            return (self.prev_best_point)
+        width_to_cover = car_width * extra_pct
+        for index in disparities:
+            first_idx = index - 1
+            points = ranges[first_idx : first_idx + 2]
+            close_idx = first_idx + np.argmin(points)
+            far_idx = first_idx + np.argmax(points)
+            close_dist = ranges[close_idx]
+            num_points_to_cover = self.get_num_points_to_cover(
+                close_dist, width_to_cover
+            )
+            cover_right = close_idx < far_idx
+            ranges = self.cover_points(
+                num_points_to_cover, close_idx, cover_right, ranges
+            )
+        return ranges
 
-    
-    def get_velocity(self, steering_angle, adaptive=True):
-        sigmoid = lambda x: 1/(1+np.exp(-x))
+    def get_steering_angle(self, range_index, range_len):
+
+        lidar_angle = (range_index - (range_len / 2)) * self.radians_per_point
+        steering_angle = (
+            np.clip(lidar_angle, np.radians(-90), np.radians(90))
+            / self.STEERING_SENSITIVITY
+        )
+        return steering_angle
+
+    def lidar_callback(self, data):
+        if not self.active:
+            return False
+
+        drive_msg = AckermannDriveStamped()
+        drive_msg.header.stamp = self.get_clock().now().to_msg()
+
+        ranges = data.ranges
+        self.radians_per_point = (data.angle_max - data.angle_min) / len(ranges)
+        proc_ranges = self.preprocess_lidar(data)
+        differences = self.get_differences(proc_ranges)
+        disparities = self.get_disparities(differences, self.DIFFERENCE_THRESHOLD)
+        proc_ranges = self.extend_disparities(
+            disparities, proc_ranges, self.car_width, self.SAFETY_PERCENTAGE
+        )
+        steering_angle = self.get_steering_angle(proc_ranges.argmax(), len(proc_ranges))
+        speed = self.get_speed(steering_angle)
+
+        self.get_logger().info("steering_angle: {}, speed: {}".format(steering_angle, speed))
+
+        drive_msg = AckermannDriveStamped()
+        drive_msg.header.stamp = self.get_clock().now().to_msg()
+        drive_msg.drive.steering_angle = steering_angle
+        drive_msg.drive.speed = speed 
+        self.drive_pub.publish(drive_msg)
+
+    def get_speed(self, steering_angle):
         if self.slow_mode:
             return self.min_speed
-        if adaptive:
-            velocity = max(2*self.max_speed * abs(1-sigmoid(2* abs(steering_angle))), 0.8) # Velocity varies smoothly with steering angle
-            # print('Velocity: ' + str(velocity))
-            return velocity
-        if abs(steering_angle) < np.deg2rad(5):
-            velocity = 2.3
-        if abs(steering_angle) < np.deg2rad(10):
-            velocity = 2.2
-        elif abs(steering_angle) < np.deg2rad(15):
-            velocity = 2.1
-        elif abs(steering_angle) < np.deg2rad(20):
-            velocity = 2.0
-        elif abs(steering_angle) < np.deg2rad(30):
-            velocity = 1.8
-        elif abs(steering_angle) < np.deg2rad(40):
-            velocity = 1.6
-        else:
-            velocity = 1.4
-
-        velocity = max(MAX_SPEED-(2/(1+np.exp(-5*np.abs(steering_angle)/25))-1)*(MAX_SPEED-MIN_SPEED), MIN_SPEED)#-\frac{4}{\left(d\right)^{2}},v_{n}\right)
-        return velocity
-         
-        
-        
-    def lidar_callback(self, data):
-        """ Process each LiDAR scan as per the Follow Gap algorithm & publish an AckermannDriveStamped Message
-        """
-        """ Process each LiDAR scan as per the Follow Gap algorithm & publish an AckermannDriveStamped Message
-        """
-        if not self.active: 
-            return
-        ranges = data.ranges
-        (proc_ranges, min_idx, max_idx) = self.preprocess_lidar(ranges, data.angle_min, data.angle_max, data.angle_increment)
-        #Find closest point to LiDAR
-        closest_index = np.argmin(proc_ranges)
-        print("closest idx", closest_index)
-        #Eliminate all points inside 'bubble' (set them to zero) 
-        start_index_bubble = int(max(closest_index-self.bubble_radius, 0))
-        end_index_bubble = int(min(closest_index+self.bubble_radius, len(proc_ranges)))
-        print("indexs:",start_index_bubble, end_index_bubble)
-        # proc_ranges[start_index_bubble:end_index_bubble] = 0
-        #Find max length gap 
-        (gap_start, gap_end) = self.find_max_gap(proc_ranges)
-        #Find the best point in the gap
-        print("gap endpoints", gap_start, gap_end)
-        best_point = self.find_best_point(gap_start,gap_end, proc_ranges) 
-        true_index =  best_point + min_idx
-        print("bp", best_point)
-        #Publish Drive message 
-        self.current_steeering_angle = true_index * data.angle_increment + data.angle_min
-        '''
-        desired_angle = true_index * data.angle_increment + data.angle_min
-        K_P = 0.7
-        K_I = 0.2
-        error = desired_angle-self.current_steeering_angle
-        self.integral+=error
-        self.current_steeering_angle = error*K_P + self.current_steeering_angle + self.integral * K_I
-        '''
-        derivative = self.current_steeering_angle - self.prev_angle
-        print(self.current_steeering_angle)
-        ackermann_message = AckermannDriveStamped()
-        ackermann_message.drive.steering_angle = 0.8*self.current_steeering_angle 
-        ackermann_message.drive.speed = self.get_velocity(self.current_steeering_angle)
-        self.prev_angle = self.current_steeering_angle
-        print("Velocity: ", ackermann_message.drive.speed)
-        self.drive_pub.publish(ackermann_message)
+        return max(
+            self.max_speed * (1 - math.pow(abs(steering_angle), 1 / 3)), self.min_speed
+        )
 
 
 def main(args=None):
@@ -256,5 +219,5 @@ def main(args=None):
     rclpy.shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

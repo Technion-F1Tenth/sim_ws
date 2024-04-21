@@ -42,7 +42,7 @@ class BehaviorNode(Node):
                 ("obstacles_marker_topic", "/obstacles_marker"),
                 ("odometry_topic", "/ego_racecar/odom"),
                 ("offset_points", 3),
-                ("ttc_threshold", 0.2),
+                ("ttc_threshold", 0.1),
                 ("state_topic", "/behavior_state"), 
                 ("timeout_threshold_ns", 1 * 10**9),
                 ],
@@ -130,7 +130,7 @@ class BehaviorNode(Node):
         )
         self.only_reactive = True
         self.speed = 0.0
-        self.behavior = None
+        self.behavior = Behavior.PURE_PURSUIT
         self.last_drive_msg_time = self.get_clock().now()
         
 
@@ -163,30 +163,40 @@ class BehaviorNode(Node):
         return not will_crash
 
     def laser_scan_callback(self, msg):
+        self.laser_scan = msg
+        if self.behavior != Behavior.REACTIVE:
+            return
+        new_behavior = None 
         if self.behavior == Behavior.SAFETY_STOP:
             return
         self.laser_scan = msg
         # Choose behavior
         print("Laser Scan Callback")
+        new_behavior = None
         if self.only_reactive:
             is_safe = self.safety_check()
             if is_safe:
-                self.behavior = Behavior.REACTIVE
+                new_behavior = Behavior.REACTIVE
             else:
 
-                self.behavior = Behavior.STOP
-            msg = String()
-            msg.data = self.behavior.name
-            self.behavior_state_pub.publish(msg)
+                new_behavior = Behavior.STOP
+            if new_behavior != self.behavior:
+                self.behavior = new_behavior
+                msg = String()
+                msg.data = self.behavior.name
+                self.behavior_state_pub.publish(msg)
+            
 
         self.safety_callback()
 
     def occupancy_grid_callback(self, msg):
+        new_behavior = self.behavior
+
         if self.behavior == Behavior.SAFETY_STOP:
             return
         self.occupancy_grid = msg.data
         self.occupancy_grid = np.array(self.occupancy_grid).reshape(
-            (self.occupancy_grid.info.height, self.occupancy_grid.info.width)
+            (msg.info.height, msg.info.width)
         )
 
         # Choose behavior
@@ -206,16 +216,16 @@ class BehaviorNode(Node):
                 self.behavior = Behavior.REACTIVE  # self.behavior = Behavior.SPLINE
             else:
                 self.get_logger().info("No Obstacles Detected")
-                self.drive_pub.publish(msg)
                 self.behavior = Behavior.PURE_PURSUIT
         else:
             self.get_logger().info("Not safe to drive")
             self.behavior = Behavior.STOP
         # Execute behavior
-        behavior_msg = String()
-        msg.data = self.behavior.name
-        self.behavior_state_pub.publish(behavior_msg)
-        self.safety_callback()
+        if self.behavior != new_behavior:
+            behavior_msg = String()
+            behavior_msg.data = new_behavior.name
+            self.behavior_state_pub.publish(behavior_msg)
+            self.safety_callback()
 
     def safety_callback(self):
         if self.behavior == Behavior.STOP:
