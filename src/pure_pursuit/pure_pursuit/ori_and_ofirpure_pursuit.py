@@ -44,8 +44,8 @@ class PurePursuit(Node):
                 ("drive_topic", "/drive"),
                 ("waypoint_viz_topic", "/waypoint_array"),
                 ("goalpoint_viz_topic", "/waypoint_array"),
-                ("file_name", "demo_easy_track.csv"),
-                ("K_P", 0.4),
+                ("file_name", "lab_today_waypoints.csv"),
+                ("K_P", 0.5),
                 ("lookahead_distance", 0.1),
                 ("base_velocity", 2.0),
                 ("new_path_topic", "/new_path_pose"),
@@ -90,7 +90,7 @@ class PurePursuit(Node):
         dist = self.calc_dist(pose_msg,self.get_closest_point(pose_msg)[1])
         lookahead = A*math.pow(velocity,2)+ B*velocity + C - D * dist
         self.get_logger().info(f"Calculation: {A}*{math.pow(velocity,2)} + {B}*{velocity} + {C} - {D} * {dist} = {lookahead}")
-        return  0.8 # max(lookahead*0.4, 0.2)
+        return 0.1 # max(lookahead*0.4, 0.2)
     
 
     def laser_callback(self,data):
@@ -160,7 +160,6 @@ class PurePursuit(Node):
 
     def odom_callback(self, pose_msg):
         if not self.active:
-            self.get_logger().debug("not active")
             return
         
         self.current_velocity = math.sqrt(math.pow(pose_msg.twist.twist.linear.x,2)+ math.pow(pose_msg.twist.twist.linear.y,2))

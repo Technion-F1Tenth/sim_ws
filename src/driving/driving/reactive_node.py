@@ -6,11 +6,12 @@ from rclpy.node import Node
 import numpy as np
 from sensor_msgs.msg import LaserScan
 from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
-from std_msgs.msg import String,Float64
+from std_msgs.msg import String,Float64, Float64MultiArray
 import sys
-sys.path.insert(0, "/sim_ws/src")
-from common import Behavior
+'''sys.path.insert(0, "/sim_ws/src")
+from common import Behavior'''
 from visualization_msgs.msg import MarkerArray, Marker
+from f1tenth_messages.msg import ReactiveParams
 
 SLOW_MODE = False
 MAX_SPEED = 7.0
@@ -18,6 +19,15 @@ MIN_SPEED = 1.0
 MIN_THRESHOLD_FOR_CORNER = 1.
 CORNER_DETECTION_RESOLUTION = 2
 CAR_WIDTH = 0.5
+from enum import Enum
+
+class Behavior(Enum):
+    REACTIVE = 1
+    PURE_PURSUIT = 2
+    FOLLOW = 3
+    STOP = 4
+    ONLY_REACTIVE = 5
+    SAFETY_STOP = 6
 class ReactiveFollowGap(Node):
     """ 
     Implement Wall Following on the car
@@ -28,27 +38,30 @@ class ReactiveFollowGap(Node):
         # Topics & Subs, Pubs
         lidarscan_topic = '/scan'
         drive_topic = '/drive'
-        self.declare_parameters(
-            namespace='',
-            parameters=[
-                ('bubble_radius', 0.3),
+        parameteres_demo = [
+                ('bubble_radius', 0.4),
                 ('laser_topic', '/scan'),
                 ('drive_topic', '/drive'),
-                ('slow_mode', False),
-                ('max_speed', 4.0),
-                ('min_speed', 0.8),
+                ('slow_mode', True),
+                ('max_speed', 3.0),
+                ('min_speed', 1.2),
                 ('max_range', 5.0),
                 ('car_width', 0.3),
                 ("state_topic", "/behavior_state"),
                 ("velocity_topic", "/follow_the_gap_velocity"),
                 ("threshold_topic", "/follow_the_gap_threshold"),
-                ("safety_factor", 1.6),
+                ("safety_factor", 2.0), #.3
                 ("state_topic", "/behavior_state"),
-                ("max_lidar_range", 5.0),
+                ("max_lidar_range", 8.0),
                 ("disparity_threshold", 0.1),
                 ("marker_topic", "/chosen_point"),
-                ("angle_clip", 3/4 * math.pi)
-            ],
+                ("angle_clip", 3/4 * math.pi),
+                ("param_update", "/reactive/param_update"),
+            ]
+
+        self.declare_parameters(
+            namespace='',
+            parameters=parameteres_demo,
         )
 
         self.STEERING_SENSITIVITY = 1.0
@@ -83,8 +96,32 @@ class ReactiveFollowGap(Node):
             self.behavior_state_callback,
             10,
         )
-        self.active = True  # Change to true if running without behavior node
+        self.active = False  # Change to true if running without behavior node
         self.prev_angle = 0
+        
+
+
+        # Configuration topics 
+       
+        self.param_update_sub = self.create_subscription(ReactiveParams, self.get_parameter("param_update").value, self.param_update_callback, 10)
+        self.K_P = [0.2, 0.625] # [not slow mode, slow mode 0.325]
+        self.K_D = [0.05, -0.135] # [not slow mode, slow mode]
+        print("Reactive Node Initialized")
+        print(parameteres_demo)
+
+    def param_update_callback(self, msg):
+        self.max_speed = msg.max_speed
+        self.min_speed = msg.min_speed
+        self.SAFETY_PERCENTAGE = msg.safety_factor
+        self.K_P = msg.kp
+        self.K_D = msg.kd
+        print("changed")
+        self.get_logger().info("Parameters Updated")
+    
+    
+
+    
+
 
     def behavior_state_callback(self, msg):
         if msg.data == Behavior.REACTIVE.name:
@@ -100,8 +137,8 @@ class ReactiveFollowGap(Node):
         """
         ranges = data.ranges
         ranges = np.array(ranges)
-        min_angle = -120 * (math.pi/180) 
-        max_angle = 120 * (math.pi/180) 
+        min_angle = -90 * (math.pi/180) 
+        max_angle = 90 * (math.pi/180) 
         min_idx = int(math.floor((min_angle - data.angle_min)/data.angle_increment))
         max_idx = int(math.floor((max_angle - data.angle_min)/data.angle_increment))
         ranges = np.clip(ranges, 0, 16)
@@ -191,27 +228,41 @@ class ReactiveFollowGap(Node):
             disparities, proc_ranges, self.car_width, self.SAFETY_PERCENTAGE
         )
         steering_angle = self.get_steering_angle(proc_ranges.argmax(), len(proc_ranges))
-        speed = self.get_speed(steering_angle)
-
-        self.get_logger().info("steering_angle: {}, speed: {}".format(steering_angle, speed))
+        
 
         drive_msg = AckermannDriveStamped()
         drive_msg.header.stamp = self.get_clock().now().to_msg()
-        drive_msg.drive.steering_angle = steering_angle
+        
+        drive_msg.drive.steering_angle = steering_angle * self.K_P[int(self.slow_mode)]  + self.K_D[int(self.slow_mode)] * (steering_angle-self.prev_angle)
+
+        speed = self.get_speed(drive_msg.drive.steering_angle) 
+
+        # self.get_logger().info("steering_angle: {}, speed: {}".format(steering_angle, speed))
+
+        self.prev_angle = drive_msg.drive.steering_angle
         drive_msg.drive.speed = speed 
         self.drive_pub.publish(drive_msg)
 
     def get_speed(self, steering_angle):
+        velocity = self.min_speed
         if self.slow_mode:
-            return self.min_speed
-        return max(
-            self.max_speed * (1 - math.pow(abs(steering_angle), 1 / 3)), self.min_speed
-        )
+            return velocity
+        '''return max(
+            self.max_speed * (1 - math.pow(abs(steering_angle), 2)), self.min_speed # 
+        )'''
+        if abs(steering_angle) < np.deg2rad(5):
+            velocity = self.max_speed
+        if abs(steering_angle) < np.deg2rad(10):
+            velocity = self.max_speed * 0.9
+        elif abs(steering_angle) < np.deg2rad(15):
+            velocity = self.max_speed * 0.8
+        else:
+            velocity = self.min_speed
+        return velocity
 
 
 def main(args=None):
     rclpy.init(args=args)
-    print("WallFollow Initialized")
     reactive_node = ReactiveFollowGap()
     rclpy.spin(reactive_node)
 

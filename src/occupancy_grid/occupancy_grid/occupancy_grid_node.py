@@ -21,7 +21,7 @@ class OccupancyGridNode(Node):
                 ("map_height", 30),
                 ("map_width", 40),
                 ("resolution", 0.1),
-                ("laser_frame", "/ego_racecar/laser"),
+                ("laser_frame", "ego_racecar/laser"),
                 ("laser_topic", "/scan"),
                 ("odom_topic", "/ego_racecar/odom"),
                 ("map_topic", "/occupancy_grid"),

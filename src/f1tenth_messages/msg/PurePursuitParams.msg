@@ -1,0 +1,5 @@
+float64 max_acceleration
+float64 minimum_turning_radius
+float64 max_velocity
+float64 kp
+float64 d

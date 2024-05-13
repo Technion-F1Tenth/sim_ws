@@ -133,7 +133,6 @@ class BehaviorNode(Node):
         self.speed = 0.0
         self.behavior = Behavior.PURE_PURSUIT
         self.last_drive_msg_time = self.get_clock().now()
-        self.occupancy_grid_content = np.array([])
         
 
     def command_callback(self, msg):
@@ -196,8 +195,8 @@ class BehaviorNode(Node):
 
         if self.behavior == Behavior.SAFETY_STOP:
             return
-        self.occupancy_grid = msg
-        self.occupancy_grid_content = np.array(self.occupancy_grid.data).reshape(
+        self.occupancy_grid = msg.data
+        self.occupancy_grid = np.array(self.occupancy_grid).reshape(
             (msg.info.height, msg.info.width)
         )
 
@@ -262,63 +261,46 @@ class BehaviorNode(Node):
     Returns the obstructed spots as indexes of the local planning occupancy grid 
     """
 
-    def get_closest_point(self):
-        # return index of closest point 
-        closest_idx = min(range(len(self.waypoints)), key=lambda i: self.dist_points(self.waypoints[i]))
-        return closest_idx 
-
-    def dist_points(self, waypoint):        
-        return math.sqrt(
-            (self.car_pose.position.x - waypoint[0])**2
-            + (self.car_pose.position.y - waypoint[1])**2
-        )
-            
-
     def check_obstacles_in_grid(self):
-        obstacles = []
-        print("Checking obstacles")
-        closest_index = self.get_closest_point()
-        # define a safety radius in meters 
-        safety_radius = 1.0
-        # get the closest point to the car
+        obstacles_array = []
+    
         frame = "ego_racecar/laser"
         transform = None
-        if self.tfBuffer.can_transform(frame, "map", rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=1.0)):
+        if self.tfBuffer.can_transform(frame, "map", rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.2)):
             transform = self.tfBuffer.lookup_transform(frame, "map", rclpy.time.Time())
-            i = closest_index
-            (upper_bound, lower_bound) = (closest_index,closest_index)
+        else: 
+            self.get_logger().info("No Transform Found")
+            return obstacles_array
+        obstacles = MarkerArray()
+        obstacles.markers = []
 
-            while self.dist_points(self.waypoints[i]) < safety_radius:
-            # check if the point is in the occupancy grid
-                upper_bound = i
-                i += 1
-                if i >= len(self.waypoints):
-                    break
-        
-            i = closest_index 
+        # self.get_logger().info(str(len(self.poses)) + "self.poses")
+        if len(self.waypoints) == 0:
+            pass
+        else: 
+            for index_pose, waypoint in enumerate(self.waypoints):
+                # elf.get_logger().info('Checking Obstacles')
 
-            while self.dist_points(self.waypoints[i]) < safety_radius:
-                # check if the point is in the occupancy grid
-                lower_bound = i
-                i -= 1
-                if i < 0:
-                    i = len(self.waypoints) - 1
+                # Use transform to get the pose in the map frame
+                # create a pose in the map frame
 
-            for i in range(lower_bound, upper_bound):
-                # transform the waypoint 
                 pose = Pose()
-                pose.position.x = self.waypoints[i][0]
-                pose.position.y = self.waypoints[i][1]
+                pose.position.x = waypoint[0]
+                pose.position.y = waypoint[1]
                 pose.position.z = 0.0
                 pose.orientation.x = 0.0
                 pose.orientation.y = 0.0
                 pose.orientation.z = 0.0
                 pose.orientation.w = 1.0
                 pose_car_frame = tf2_geometry_msgs.do_transform_pose(pose, transform)
+                # Get the pose in the map frame
+                """
+                    # Obstacle in discretized coordinate frame.
+                    y_grid = int(y/self.resolution) + self.height//2 # x coordinate in grid frame
+                    x_grid = int(x/self.resolution) # y coordinate in grid frame
+                    """
 
-                # check if the point is in the occupancy grid
-                x = self.waypoints[i][0]
-                y = self.waypoints[i][1]
+                # Map pose to occupancy grid
                 y_grid = (
                     int(pose_car_frame.position.y / self.occupancy_grid.info.resolution)
                     + self.occupancy_grid.info.height // 2
@@ -327,6 +309,7 @@ class BehaviorNode(Node):
                     pose_car_frame.position.x / self.occupancy_grid.info.resolution
                 )
 
+                # Check if the pose is in the map
                 if (
                     x_grid >= 0
                     and x_grid < self.occupancy_grid.info.width
@@ -334,21 +317,56 @@ class BehaviorNode(Node):
                     and y_grid < self.occupancy_grid.info.height
                 ):
                     # Check if it is occupied
-                    if self.occupancy_grid_content[y_grid][x_grid] == 100:
-                        obstacles.append((x, y))
+                    if self.occupancy_grid[y_grid][x_grid] == 100:
+                        obstacles_array.append([y_grid, x_grid])
+                        # Create a marker for the obstacle
+                        obstacle_marker = Marker()
 
-        else:
-            self.get_logger().error("Transform not available")
-        return obstacles
-
-
-
-        return []
-
-
-
-       
+                        obstacle_marker.header.frame_id = "map"
+                        # Add a stamp time
+                        obstacle_marker.header.stamp = rclpy.time.Time().to_msg()
+                        # duration
+                        obstacle_marker.lifetime = rclpy.time.Duration(
+                            seconds=1.0
+                        ).to_msg()
+                        obstacle_marker.id = index_pose
+                        obstacle_marker.type = Marker.CUBE
+                        obstacle_marker.action = Marker.ADD
+                        obstacle_marker.pose.position.x = pose.position.x
+                        obstacle_marker.pose.position.y = pose.position.y
+                        obstacle_marker.pose.position.z = pose.position.z
+                        obstacle_marker.pose.orientation.x = pose.orientation.x
+                        obstacle_marker.pose.orientation.y = pose.orientation.y
+                        obstacle_marker.pose.orientation.z = pose.orientation.z
+                        obstacle_marker.pose.orientation.w = pose.orientation.w
+                        obstacle_marker.scale.x = 0.1
+                        obstacle_marker.scale.y = 0.1
+                        obstacle_marker.scale.z = 0.1
+                        obstacle_marker.color.a = 1.0
+                        obstacle_marker.color.r = 0.0
+                        obstacle_marker.color.g = 0.0
+                        obstacle_marker.color.b = 1.0
+                        obstacles.markers.append(obstacle_marker)
+                        # TODO: PLAN AROUND THE OBSTACLE
+                        # Calculate the distance from the obstacle
+                        # Calculate the angle from the obstacle
+                        distance = math.sqrt(
+                            (pose.position.x - self.odometry.pose.pose.position.x) ** 2
+                            + (pose.position.y - self.odometry.pose.pose.position.y)
+                            ** 2
+                        )
+                        angle = math.atan2(
+                            pose.position.y - self.odometry.pose.pose.position.y,
+                            pose.position.x - self.odometry.pose.pose.position.x,
+                        )
+                        self.get_logger().info("Obstacle Detected" + str(pose.position))
+                        self.get_logger().info("Distance to Obstacle" + str(distance))
+        if not len(obstacles.markers) > 0:
+            self.get_logger().info("No Obstacles Detected")
+        return obstacles_array
         
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = BehaviorNode()
