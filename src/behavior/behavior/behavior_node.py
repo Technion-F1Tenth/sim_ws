@@ -156,10 +156,10 @@ class BehaviorNode(Node):
             if projected_vel != 0:
                 time_to_crash = distance / projected_vel
                 min_ttc = min(time_to_crash, min_ttc)
-                if time_to_crash < self.ttc_threshold or distance < 0.2 or ellapsed_time > self.get_parameter("timeout_threshold_ns").get_parameter_value().integer_value:
+                if time_to_crash < self.ttc_threshold or distance < 0.05 or ellapsed_time > self.get_parameter("timeout_threshold_ns").get_parameter_value().integer_value:
                     will_crash = True
 
-        print(min_ttc, min_dist, ellapsed_time)
+        # print(min_ttc, min_dist, ellapsed_time)
 
 
         return not will_crash
@@ -180,8 +180,7 @@ class BehaviorNode(Node):
             if is_safe:
                 new_behavior = Behavior.REACTIVE
             else:
-
-                new_behavior = Behavior.STOP
+                new_behavior = Behavior.REACTIVE
             if new_behavior != self.behavior:
                 self.behavior = new_behavior
                 msg = String()
@@ -192,7 +191,8 @@ class BehaviorNode(Node):
         self.safety_callback()
 
     def occupancy_grid_callback(self, msg):
-        new_behavior = self.behavior
+        
+        old_behavior = self.behavior
 
         if self.behavior == Behavior.SAFETY_STOP:
             return
@@ -207,27 +207,28 @@ class BehaviorNode(Node):
             if is_safe:
                 self.behavior = Behavior.REACTIVE
             else:
-                self.behavior = Behavior.STOP
+                self.behavior = Behavior.REACTIVE
 
         if is_safe:
             obstacles = self.check_obstacles_in_grid()
             if len(obstacles) > 0:
-                self.get_logger().info("Obstacle Detected")
                 self.get_logger().info(str(obstacles))
                 # Switch to reactive node / spline planning
                 self.behavior = Behavior.REACTIVE  # self.behavior = Behavior.SPLINE
+                self.switch_time = self.get_clock().now().nanoseconds
+            
             else:
-                self.get_logger().info("No Obstacles Detected")
+                # self.get_logger().info("No Obstacles Detected")
                 self.behavior = Behavior.PURE_PURSUIT
         else:
             self.get_logger().info("Not safe to drive")
-            self.behavior = Behavior.STOP
+            self.behavior = Behavior.REACTIVE
         # Execute behavior
-        if self.behavior != new_behavior:
+        if self.behavior != old_behavior and self.get_clock().now().nanoseconds - self.switch_time > pow(10,9) * 0.5:
             behavior_msg = String()
-            behavior_msg.data = new_behavior.name
+            behavior_msg.data = self.behavior.name
             self.behavior_state_pub.publish(behavior_msg)
-            self.safety_callback()
+            self.get_logger().info(f"Occupancy Grid Callback - Currrent behavior {self.behavior.name}")
 
     def safety_callback(self):
         if self.behavior == Behavior.STOP:
@@ -283,7 +284,7 @@ class BehaviorNode(Node):
         # get the closest point to the car
         frame = "ego_racecar/laser"
         transform = None
-        if self.tfBuffer.can_transform(frame, "map", rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=1.0)):
+        if self.tfBuffer.can_transform(frame, "map", rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1)):
             transform = self.tfBuffer.lookup_transform(frame, "map", rclpy.time.Time())
             i = closest_index
             (upper_bound, lower_bound) = (closest_index,closest_index)
@@ -334,7 +335,7 @@ class BehaviorNode(Node):
                     and y_grid < self.occupancy_grid.info.height
                 ):
                     # Check if it is occupied
-                    if self.occupancy_grid_content[y_grid][x_grid] == 100:
+                    if self.occupancy_grid_content[y_grid][x_grid] > 0 or self.occupancy_grid_content[y_grid][x_grid]<0 :
                         obstacles.append((x, y))
 
         else:

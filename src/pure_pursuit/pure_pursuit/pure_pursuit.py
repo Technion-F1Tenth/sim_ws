@@ -60,9 +60,7 @@ class PurePursuit(Node):
         self.waypoints = np.genfromtxt("wps/"+self.get_parameter("file_name").get_parameter_value().string_value, delimiter=",")
         self.original_waypoints = np.genfromtxt("wps/"+self.get_parameter("file_name").get_parameter_value().string_value, delimiter=",")
         self.drive_pub = self.create_publisher(AckermannDriveStamped, self.get_parameter("drive_topic").get_parameter_value().string_value, 10)
-        self.waypoints_viz_pub = self.create_publisher(
-            MarkerArray, self.get_parameter("waypoint_viz_topic").get_parameter_value().string_value, 10
-        )
+        
         self.goal_marker_pub = self.create_publisher(Marker, self.get_parameter("goalpoint_viz_topic").get_parameter_value().string_value, 10)
         self.laser_topic = self.create_subscription(LaserScan, self.get_parameter("laser_topic").get_parameter_value().string_value, self.laser_callback, 10)
         # self.init_markers(self.waypoints)
@@ -89,7 +87,7 @@ class PurePursuit(Node):
         D = 0.1
         dist = self.calc_dist(pose_msg,self.get_closest_point(pose_msg)[1])
         lookahead = A*math.pow(velocity,2)+ B*velocity + C - D * dist
-        self.get_logger().info(f"Calculation: {A}*{math.pow(velocity,2)} + {B}*{velocity} + {C} - {D} * {dist} = {lookahead}")
+        # self.get_logger().info(f"Calculation: {A}*{math.pow(velocity,2)} + {B}*{velocity} + {C} - {D} * {dist} = {lookahead}")
         return  0.8 # max(lookahead*0.4, 0.2)
     
 
