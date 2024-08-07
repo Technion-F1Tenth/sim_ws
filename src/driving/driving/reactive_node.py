@@ -43,17 +43,17 @@ class ReactiveFollowGap(Node):
                 ('laser_topic', '/scan'),
                 ('drive_topic', '/drive'),
                 ('slow_mode', True),
-                ('max_speed', 3.0),
+                ('max_speed', 5.0),
                 ('min_speed', 1.2),
                 ('max_range', 5.0),
                 ('car_width', 0.3),
                 ("state_topic", "/behavior_state"),
                 ("velocity_topic", "/follow_the_gap_velocity"),
                 ("threshold_topic", "/follow_the_gap_threshold"),
-                ("safety_factor", 2.0), #.3
+                ("safety_factor", 1.2), #.3
                 ("state_topic", "/behavior_state"),
-                ("max_lidar_range", 8.0),
-                ("disparity_threshold", 0.1),
+                ("max_lidar_range", 30.0),
+                ("disparity_threshold", 0.05),
                 ("marker_topic", "/chosen_point"),
                 ("angle_clip", 3/4 * math.pi),
                 ("param_update", "/reactive/param_update"),
@@ -96,7 +96,7 @@ class ReactiveFollowGap(Node):
             self.behavior_state_callback,
             10,
         )
-        self.active = False  # Change to true if running without behavior node
+        self.active = True  # Change to true if running without behavior node
         self.prev_angle = 0
         
 
@@ -104,8 +104,9 @@ class ReactiveFollowGap(Node):
         # Configuration topics 
        
         self.param_update_sub = self.create_subscription(ReactiveParams, self.get_parameter("param_update").value, self.param_update_callback, 10)
-        self.K_P = [0.2, 0.625] # [not slow mode, slow mode 0.325]
-        self.K_D = [0.05, -0.135] # [not slow mode, slow mode]
+        self.K_P = [0.35, 0.625] # [not slow mode, slow mode 0.325]
+        self.K_D = [0.0, -0.135] # [not slow mode, slow mode]
+        self.average_tracking_error = 0.0
         print("Reactive Node Initialized")
         print(parameteres_demo)
 
@@ -215,7 +216,6 @@ class ReactiveFollowGap(Node):
     def lidar_callback(self, data):
         if not self.active:
             return False
-
         drive_msg = AckermannDriveStamped()
         drive_msg.header.stamp = self.get_clock().now().to_msg()
 
@@ -258,7 +258,9 @@ class ReactiveFollowGap(Node):
             velocity = self.max_speed * 0.8
         else:
             velocity = self.min_speed
-        return velocity
+        a = 0.6
+        k = 0.9
+        return max(1.0, self.max_speed * (1 - a * abs(steering_angle)))
 
 
 def main(args=None):

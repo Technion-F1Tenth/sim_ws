@@ -7,6 +7,13 @@ from std_msgs.msg import Bool, String, Header
 from ackermann_msgs.msg import AckermannDriveStamped
 import numpy as np
 from tf_transformations import euler_from_quaternion
+from scipy import signal
+
+class Ray:
+    def __init__(self, angle, origin=(0, 0)):
+        self.angle = angle
+        self.direction = {"x": np.cos(angle), "y": np.sin(angle)}
+        self.origin = {"x": origin[0], "y": origin[1]}
 
 
 class OccupancyGridNode(Node):
@@ -43,6 +50,7 @@ class OccupancyGridNode(Node):
         self.height = self.get_parameter("map_height").value
         self.resolution = self.get_parameter("resolution").value
         self.rotation_matrix = None
+        print("in init")
 
     def in_grid(self, x_grid, y_grid):
         return (
@@ -74,6 +82,25 @@ class OccupancyGridNode(Node):
             [[np.cos(heading), -np.sin(heading)], [np.sin(heading), np.cos(heading)]]
         )
 
+    
+
+    def initialize_step_x(self, ray):
+        if ray.direction["x"] > 0:
+            return 1
+        elif ray.direction["x"] < 0:
+            return -1
+        else:
+            return 0
+        
+    def initialize_step_y(self, ray):
+        if ray.direction["y"] > 0:
+            return 1
+        elif ray.direction["y"] < 0:
+            return -1
+        else:
+            return 0
+        
+
     def set_obstacle(self, grid, angles, dist, lidar_position=0.265):
         for d in range(len(dist)):
             x = dist[d] * np.cos(angles[d])  # x coordinate in lidar frame
@@ -83,12 +110,54 @@ class OccupancyGridNode(Node):
             y_grid = int(y / self.resolution)  # x coordinate in grid frame
             x_grid = int(x / self.resolution)  # y coordinate in grid frame
 
-            y_grid = y_grid + self.height // 2
+            y_grid = y_grid + self.height // 2 
 
             if self.in_grid(x_grid, y_grid):
                 grid[y_grid, x_grid] = 100
-        wangles = np.linspace(-np.pi * 1 / 2, np.pi * 1 / 2, num=len(dist))
+        wangles = np.linspace(-np.pi * 1 , np.pi * 1 , num=int(len(dist)*5))
         for angle in wangles:
+            GRID_MIN = 0
+            ray = Ray(angle, (0, (self.height // 2)* self.resolution))
+            x_step = self.initialize_step_x(ray)
+            y_step = self.initialize_step_y(ray)
+            current_x = ray.origin["x"]
+            current_y = ray.origin["y"]
+            x_grid = int(current_x / self.resolution)
+            y_grid = int(current_y / self.resolution)
+            tMinY = 0 #(GRID_MIN - ray.origin["y"]) / ray.direction["y"]
+            if ray.direction["y"] < 0:
+                tMinY = (GRID_MIN - ray.origin["y"]) / ray.direction["y"]
+        
+            #tmaxx = tMin + (grid.minBound().x() + current_X_index * grid.voxelSizeX() - ray_start.x()) / ray.direction().x();
+
+            tMaxX = tMaxX = (GRID_MIN + x_grid * self.resolution - ray.origin["x"])/ray.direction["x"] # tMax = (grid.minBound.x + current_X_index - ray_origin.x) / ray.direction.x);
+            tMaxY = tMinY + (GRID_MIN + y_grid * self.resolution - ray.origin["y"])/ray.direction["y"]# tMax = (grid.minBound.y + current_Y_index - ray_origin.y) / ray.direction.y);
+            tDeltaX = self.resolution / ray.direction["x"]
+            tDeltaY = self.resolution / ray.direction["y"]
+            while self.in_grid(x_grid, y_grid):
+                if tMaxX < tMaxY:
+                    tMaxX = tMaxX+tDeltaX
+                    current_x += x_step * self.resolution
+                elif tMaxX > tMaxY:
+                    tMaxY = tMaxY+ tDeltaY
+                    current_y += y_step * self.resolution
+                else:
+                    tMaxX = tMaxX+tDeltaX
+                    tMaxY = tMaxY+ tDeltaY
+                    current_x += x_step * self.resolution
+                    current_y += y_step * self.resolution
+
+                x_grid = int(current_x / self.resolution)
+                y_grid = int(current_y / self.resolution)
+                if self.in_grid(x_grid, y_grid):
+                    if grid[y_grid, x_grid] == 100:
+                        break
+                    grid[y_grid, x_grid] = 0
+            grid[:, int(ray.origin['y'] / self.resolution)] = 0
+            grid[int(ray.origin['y'] / self.resolution), :] = 0
+                
+        '''# Trace a 0 angle ray
+        for angle in [-0.01]:
             direction = np.array([np.cos(angle), np.sin(angle)])
             x_0 = 0
             y_0 = self.height // 2 * self.resolution
@@ -109,13 +178,15 @@ class OccupancyGridNode(Node):
                         break
                     grid[y_grid, x_grid] = 0
 
-                t += self.resolution
+                t += self.resolution'''
+
         return
 
     def scan_callback(self, scan_msg):
+        print("in callback")
 
         if self.car_position is not None and self.map_metadata is not None:
-
+            print('inside if')
             grid = np.ndarray(
                 (self.height, self.width),
                 buffer=np.zeros((self.height, self.width), dtype=np.int),

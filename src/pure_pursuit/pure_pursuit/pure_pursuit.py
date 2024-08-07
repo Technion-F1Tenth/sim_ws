@@ -13,7 +13,7 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Point, PoseStamped, Pose, PointStamped, PoseArray
 import math
 import tf_transformations
-from std_msgs.msg import String
+from std_msgs.msg import String, Float32
 import sys
 '''sys.path.insert(0, "/sim_ws/src/")
 
@@ -34,26 +34,29 @@ from f1tenth_messages.msg import PurePursuitParams
 
 class PurePursuit(Node):
     def __init__(self):
-        super().__init__("f110_pure_pursuit_node")
+        super().__init__("self_driving_node")
         self.declare_parameters(
             namespace="",
             parameters=[
                 ("laser_topic", "/scan"),
                 ("odom_topic", "/ego_racecar/odom"),
-                ("map_topic", "/occupancy_grid"),
+                ("map_topic", "ego_racecar/occupancy_grid"),
                 ("drive_topic", "/drive"),
                 ("waypoint_viz_topic", "/waypoint_array"),
                 ("goalpoint_viz_topic", "/waypoint_array"),
-                ("file_name", "demo_easy_track.csv"),
-                ("K_P", 0.4),
+                ("file_name", "Spielberg_raceline.csv"),
+                ("K_P", 0.3),
+                ("K_D", 0.01),
                 ("lookahead_distance", 0.1),
-                ("base_velocity", 2.0),
+                ("base_velocity", 4.0),
                 ("new_path_topic", "/new_path_pose"),
                 ("behavior_topic", "/behavior_state"),
                 ("max_acceleration", 2.5),
-                ("minimum_turning_radius", 0.861)
+                ("minimum_turning_radius", 0.861),
+                ("waypoint_viz_topic", "/waypoint_viz"),
             ],
         )
+        self.waypoints_viz_pub = self.create_publisher(MarkerArray, self.get_parameter("waypoint_viz_topic").get_parameter_value().string_value, 10)
         self.pose_sub = self.create_subscription(
             Odometry, self.get_parameter("odom_topic").get_parameter_value().string_value, self.odom_callback, 10
         )
@@ -74,6 +77,12 @@ class PurePursuit(Node):
         self.DIFFERENCE_THRESHOLD = 0.1
         self.max_velocity = self.get_parameter("base_velocity").get_parameter_value().double_value
         self.current_velocity = 0.0
+        self.init_markers(self.waypoints)
+        self.cross_track_error_pub = self.create_publisher(Float32, "pure_pursuit/cross_track_error", 10)
+        self.accumulated_error = 0.0
+        self.iterations = 0
+        self.average_errors = []
+        print(self.get_parameter("drive_topic").get_parameter_value().string_value)
 
         
 
@@ -88,7 +97,8 @@ class PurePursuit(Node):
         dist = self.calc_dist(pose_msg,self.get_closest_point(pose_msg)[1])
         lookahead = A*math.pow(velocity,2)+ B*velocity + C - D * dist
         # self.get_logger().info(f"Calculation: {A}*{math.pow(velocity,2)} + {B}*{velocity} + {C} - {D} * {dist} = {lookahead}")
-        return  0.8 # max(lookahead*0.4, 0.2)
+        return 0.6
+    
     
 
     def laser_callback(self,data):
@@ -105,7 +115,7 @@ class PurePursuit(Node):
             if len(disparities) == 0:
                 return 1
             else:
-                return 0.5
+                return 0.8
             
         else: 
             return 0.1
@@ -120,8 +130,8 @@ class PurePursuit(Node):
 
     def calc_dist(self, pose_msg, element):
         return math.sqrt(
-            math.pow((pose_msg.pose.pose.position.x - element[0]), 2)
-            + math.pow((pose_msg.pose.pose.position.y - element[1]), 2)
+            math.pow((pose_msg.pose.pose.position.x - element[1]), 2)
+            + math.pow((pose_msg.pose.pose.position.y - element[2]), 2)
         )
     
     def behavior_state_callback(self, msg):
@@ -143,6 +153,12 @@ class PurePursuit(Node):
                 best_index = index
                 best_element = element
         self.last_closest_index = best_index
+        self.accumulated_error += best_distance
+        self.iterations += 1
+        if self.iterations > 100:
+            print("Average error: ", self.accumulated_error/self.iterations)
+            self.iterations = 0
+            self.accumulated_error = 0
         if best_index > len(self.waypoints) - 5:
             self.waypoints = self.original_waypoints
             for index, element in enumerate(self.waypoints):
@@ -151,12 +167,27 @@ class PurePursuit(Node):
                     best_distance = distance
                     best_index = index
                     best_element = element
+        error_msg = Float32()
+        error_msg.data = best_distance
+        #calculate average error
+        self.cross_track_error_pub.publish(error_msg)
         return (best_index, best_element)
+    
 
     def get_velocity(self, steering_angle):
-        return self.max_velocity * (1-math.pow(abs(steering_angle),1/2))
+        velocity = self.max_velocity
+        if abs(steering_angle) > np.deg2rad(10):
+            velocity = self.max_velocity * 0.3
+        elif abs(steering_angle) > np.deg2rad(5):
+            velocity = self.max_velocity * 0.5
+        elif abs(steering_angle) > np.deg2rad(2):
+            velocity = self.max_velocity * 0.75
+        return velocity
+        # max(1.0, self.max_velocity*abs(1-a*pow(abs(steering_angle),k))) #abs(1-a*pow(abs(steering_angle),k))
 
     def odom_callback(self, pose_msg):
+
+        # self.init_markers(self.waypoints)
         if not self.active:
             self.get_logger().debug("not active")
             return
@@ -181,7 +212,7 @@ class PurePursuit(Node):
         )
         (closest_idx, closest_point) = self.get_closest_point(pose_msg)
         idx = closest_idx
-        self.get_logger().info(f"Chosen lookahead distance: {lookahead_distance}")
+        #self.get_logger().info(f"Chosen lookahead distance: {lookahead_distance}")
         if not math.isnan(idx):
             pt = closest_point
             dist = self.calc_dist(pose_msg, pt)
@@ -193,14 +224,15 @@ class PurePursuit(Node):
                 pt = self.waypoints[idx]
                 dist = self.calc_dist(pose_msg, pt)
         self.publish_waypoint(pt)
-        lookahead_angle = math.atan2(pt[1] - position[1], pt[0] - position[0])
+        lookahead_angle = math.atan2(pt[2] - position[1], pt[1] - position[0])
         # print(lookahead_angle)
         heading = tf_transformations.euler_from_quaternion(quaternion)[2]
         del_y = dist * math.sin(lookahead_angle - heading)
         curvature = 2.0 * del_y / (math.pow(dist, 2))
+        self.prev_curvature = curvature
         steering_angle = (
             float(self.get_parameter("K_P").get_parameter_value().double_value)
-            * curvature
+            * curvature + self.get_parameter("K_D").get_parameter_value().double_value * (curvature - self.prev_curvature)
         )
 
         ackermann_message = AckermannDriveStamped()
@@ -208,7 +240,11 @@ class PurePursuit(Node):
         ackermann_message.drive.speed = self.get_velocity(steering_angle)
         self.current_velocity = ackermann_message.drive.speed
         self.drive_pub.publish(ackermann_message)
-
+    
+    def save_average_error(self):
+        with open(home+"/average_errors.txt", "w") as f:
+            for error in self.average_errors:
+                f.write(str(error) + "\n")
     def publish_waypoint(self, pt):
         marker = Marker()
         marker.type = Marker.SPHERE
@@ -244,8 +280,8 @@ class PurePursuit(Node):
             marker.type = Marker.SPHERE
             marker.id = idx
             marker.lifetime = rclpy.duration.Duration(seconds=10).to_msg()
-            marker.pose.position.x = e[0]
-            marker.pose.position.y = e[1]
+            marker.pose.position.x = e[1]
+            marker.pose.position.y = e[2]
             marker.pose.position.z = 0.00
             marker.pose.orientation.x = 0.0
             marker.pose.orientation.y = 0.0
@@ -259,7 +295,9 @@ class PurePursuit(Node):
             marker.color.g = 0.0
             marker.color.b = 0.0
             marker.color.a = 0.8
+            marker.lifetime = rclpy.duration.Duration(seconds=60^2).to_msg()
             marker_array.markers.append(marker)
+            #print(marker.pose.position.x, marker.pose.position.y)
 
         self.waypoints_viz_pub.publish(marker_array)
 
@@ -272,6 +310,7 @@ def main(args=None):
 
     pure_pursuit_node.destroy_node()
     rclpy.shutdown()
+    
 
 
 if __name__ == "__main__":

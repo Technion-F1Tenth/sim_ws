@@ -21,6 +21,6 @@ def clean_csv(file_path, k):
                 writer.writerow(row)
 
 # Example usage:
-file_path = "points_map_in_the_lab_original.csv"  # Replace with the actual file path
-k = 10  # Keep every kth line
+file_path = "Spiegel_new.csv"  # Replace with the actual file path
+k = 100  # Keep every kth line
 clean_csv(file_path, k)
