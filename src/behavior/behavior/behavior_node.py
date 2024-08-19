@@ -30,7 +30,7 @@ class BehaviorNode(Node):
         self.declare_parameters(
             namespace="",
             parameters=[
-                ("file_name", "demo_easy_track.csv"),
+                ("file_name", "Spiegel_new_cleaned.csv"),
                 ("reactive_node_drive_topic", "/reactive_drive"),
                 ("pure_pursuit_node_drive_topic", "/pure_pursuit_drive"),
                 ("drive_topic", "/drive"),
@@ -132,8 +132,12 @@ class BehaviorNode(Node):
         self.only_reactive = False
         self.speed = 0.0
         self.behavior = Behavior.PURE_PURSUIT
+        self.active_behavior = Behavior.PURE_PURSUIT
+
         self.last_drive_msg_time = self.get_clock().now()
         self.occupancy_grid_content = np.array([])
+
+        self.get_logger().info("Safety Behavior Node Initialized")
         
 
     def command_callback(self, msg):
@@ -144,7 +148,9 @@ class BehaviorNode(Node):
             self.behavior = Behavior.SAFETY_STOP
             self.safety_callback()
 
-    def safety_check(self):
+    '''def safety_check(self):
+        self.get_logger().info("safety check callback")
+
         will_crash = False
         min_ttc = np.inf
         min_dist = min(self.laser_scan.ranges)
@@ -158,41 +164,56 @@ class BehaviorNode(Node):
                 min_ttc = min(time_to_crash, min_ttc)
                 if time_to_crash < self.ttc_threshold or distance < 0.05 or ellapsed_time > self.get_parameter("timeout_threshold_ns").get_parameter_value().integer_value:
                     will_crash = True
-
+        self.get_logger().info("Safety Check")
+        print("Will Crash: ", will_crash)
         # print(min_ttc, min_dist, ellapsed_time)
 
 
-        return not will_crash
+        return not will_crash'''
 
     def laser_scan_callback(self, msg):
         self.laser_scan = msg
-        if self.behavior != Behavior.REACTIVE:
-            return
-        new_behavior = None 
-        if self.behavior == Behavior.SAFETY_STOP:
-            return
-        self.laser_scan = msg
-        # Choose behavior
-        print("Laser Scan Callback")
-        new_behavior = None
-        if self.only_reactive:
-            is_safe = self.safety_check()
-            if is_safe:
-                new_behavior = Behavior.REACTIVE
-            else:
-                new_behavior = Behavior.REACTIVE
-            if new_behavior != self.behavior:
-                self.behavior = new_behavior
-                msg = String()
-                msg.data = self.behavior.name
-                self.behavior_state_pub.publish(msg)
-            
+        past_behavior = self.behavior
 
-        self.safety_callback()
+
+        self.get_logger().info(self.behavior.name)
+        self.get_logger().info("Laser Scan Callback")
+
+        if min(self.laser_scan.ranges) < 0.005:
+            self.behavior = Behavior.SAFETY_STOP
+            brake_msg = AckermannDriveStamped()
+            brake_msg.drive.speed = 0.0
+            self.drive_pub.publish(brake_msg)
+            self.safety_callback()
+            self.get_logger().info("Safety Stop")
+            return
+        else:
+            self.behavior = self.active_behavior
+
+        # Average N points in the center of the laser scan
+        ranges = self.laser_scan.ranges
+        center = len(ranges) // 2
+        N = 100
+        avg_range = sum(ranges[center - N : center + N]) / len(ranges[center - N : center + N])
+        ttc = avg_range / self.speed
+        if ttc < self.ttc_threshold:
+            self.behavior = Behavior.REACTIVE
+            brake_msg = AckermannDriveStamped()
+            brake_msg.drive.speed = 0.0
+            self.drive_pub.publish(brake_msg)
+            self.safety_callback()
+            self.get_logger().info("Safety Stop")
+
+        if past_behavior != self.behavior:
+            behavior_msg = String()
+            behavior_msg.data = self.behavior.name
+            self.behavior_state_pub.publish(behavior_msg)
+
+
 
     def occupancy_grid_callback(self, msg):
         
-        old_behavior = self.behavior
+        '''old_behavior = self.behavior
 
         if self.behavior == Behavior.SAFETY_STOP:
             return
@@ -228,7 +249,7 @@ class BehaviorNode(Node):
             behavior_msg = String()
             behavior_msg.data = self.behavior.name
             self.behavior_state_pub.publish(behavior_msg)
-            self.get_logger().info(f"Occupancy Grid Callback - Currrent behavior {self.behavior.name}")
+            self.get_logger().info(f"Occupancy Grid Callback - Currrent behavior {self.behavior.name}")'''
 
     def safety_callback(self):
         if self.behavior == Behavior.STOP:
@@ -342,14 +363,6 @@ class BehaviorNode(Node):
             self.get_logger().error("Transform not available")
         return obstacles
 
-
-
-        return []
-
-
-
-       
-        
 def main(args=None):
     rclpy.init(args=args)
     node = BehaviorNode()

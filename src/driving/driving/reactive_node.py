@@ -8,8 +8,8 @@ from sensor_msgs.msg import LaserScan
 from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
 from std_msgs.msg import String,Float64, Float64MultiArray
 import sys
-'''sys.path.insert(0, "/sim_ws/src")
-from common import Behavior'''
+sys.path.insert(0, "/sim_ws/src")
+from common import Behavior
 from visualization_msgs.msg import MarkerArray, Marker
 from f1tenth_messages.msg import ReactiveParams
 
@@ -126,6 +126,7 @@ class ReactiveFollowGap(Node):
 
     def behavior_state_callback(self, msg):
         if msg.data == Behavior.REACTIVE.name:
+            self.get_logger().info("Reactive Mode")
             self.active = True
         else:
             self.active = False

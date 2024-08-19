@@ -11,7 +11,7 @@ tmux send-keys -t my_session:1 'ros2 launch f1tenth_gym_ros gym_bridge_launch.py
 
 # Create another new window and run the second command
 tmux new-window -t my_session:2
-tmux send-keys -t my_session:2 'ros2 run driving reactive_node' ENTER
+tmux send-keys -t my_session:2 'ros2 run pure_pursuit pure_pursuit' ENTER
 
 # Attach to the tmux session
 tmux attach -t my_session
