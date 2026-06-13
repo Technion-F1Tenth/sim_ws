@@ -1,0 +1,66 @@
+sysid_data_collector:
+  ros__parameters:
+    model.L: 0.33
+    model.ref_point: "rear_axle"
+    model.delta_max: 0.4189
+    model.delta_dot_max: 3.2
+
+    limits.v_min: 0.5
+    limits.v_max: 3.0
+    limits.a_max: 2.0
+    limits.a_lat_max_safe: 4.0
+    limits.a_lat_probe_max: 8.0
+
+    paths.N: 30
+    paths.spline_order: 5
+    paths.waypoints_per_path: 6
+    paths.rng_seed: 42
+    paths.workspace_bounds: [-5.0, 5.0, -5.0, 5.0]   # [x_min, x_max, y_min, y_max], waypoint sampling domain only
+    paths.max_generation_attempts: 50
+    paths.persist_dir: ""              # "" -> derive from io.bag_path + "_paths"
+    paths.check_self_intersection: false
+
+    coverage.v_bins: [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+    # Bin edges must stay within kappa_max = tan(model.delta_max)/model.L
+    # (~1.35 for the defaults above), with margin for spline curvature
+    # to locally exceed a path's nominal 1/radius.
+    coverage.kappa_bins: [-1.2, -0.8, -0.3, 0.3, 0.8, 1.2]
+    coverage.target_revisits_per_bin: 3
+    coverage.include_figure8: true
+    coverage.figure8_period: 5
+    coverage.figure8_radius: 1.5
+    coverage.figure8_speed: 1.5
+    coverage.prioritize_corner_first: true
+    coverage.corner_probe_paths: 2
+
+    rate.control_rate_hz: 50.0
+
+    io.pose_topic: "/sysid/pose"
+    io.twist_topic: "/sysid/twist"       # "" to disable
+    io.odom_topic: "/ego_racecar/odom"   # "" to disable
+    io.drive_topic: "/safe_drive"
+    io.bag_path: "/home/mrslab3/sysid_bags/session"
+
+    velocity.velocity_source: "pose_derivative"
+    velocity.sg_window: 9
+    velocity.sg_order: 2
+    velocity.sg_dt_jitter_warn_ratio: 0.1
+
+    sync.enable_sync_chirp: true
+    sync.chirp_amplitude: 0.2
+    sync.chirp_duration: 0.5
+    sync.chirp_speed: 1.5
+
+    safety.pose_timeout_ms: 200.0
+    safety.path_timeout_s: 60.0
+    safety.settle_v_eps: 0.05
+    safety.settle_confirm_s: 0.5
+    safety.settle_timeout_s: 10.0
+    safety.watchdog_rate_hz: 20.0
+
+odom_to_pose_adapter:
+  ros__parameters:
+    odom_topic: "/ego_racecar/odom"
+    pose_topic: "/sysid/pose"
+    twist_topic: "/sysid/twist"
+    publish_twist: true
