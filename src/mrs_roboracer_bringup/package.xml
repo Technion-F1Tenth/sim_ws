@@ -10,7 +10,9 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>mrs_roboracer_safety</exec_depend>
+  <exec_depend>mrs_roboracer_sysid</exec_depend>
   <exec_depend>mrs_reactive_driver</exec_depend>
+  <exec_depend>mrs_roboracer_inference</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

@@ -20,7 +20,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 from scipy.integrate import cumulative_trapezoid
-from scipy.interpolate import make_interp_spline
+from scipy.interpolate import BSpline, make_interp_spline
 
 from mrs_roboracer_sysid.motion_model import ModelParams, curvature, steering_from_curvature
 
@@ -80,6 +80,32 @@ class GeneratedPath:
     commands: List[CommandStep]
     coverage_target: dict
     sync_chirp_steps: int = 0
+
+
+def spline_from_coeffs(spline_coeffs: dict) -> ParametricSpline:
+    """Reconstruct a ParametricSpline from a GeneratedPath's stored coefficients."""
+    order = int(spline_coeffs["order"])
+    return ParametricSpline(
+        x_spl=BSpline(spline_coeffs["x_t"], spline_coeffs["x_c"], order),
+        y_spl=BSpline(spline_coeffs["y_t"], spline_coeffs["y_c"], order),
+    )
+
+
+def sample_generated_path(path: GeneratedPath, n_samples: int = 200) -> np.ndarray:
+    """
+    Return sampled path geometry as an Nx3 array of x, y, yaw.
+
+    This samples the fitted spline, not the sparse input waypoints.
+    """
+    if n_samples < 2:
+        raise ValueError("n_samples must be at least 2")
+
+    spline = spline_from_coeffs(path.spline_coeffs)
+    u_grid = np.linspace(0.0, 1.0, n_samples)
+    x = np.asarray(spline.x(u_grid), dtype=float)
+    y = np.asarray(spline.y(u_grid), dtype=float)
+    yaw = np.arctan2(spline.dy(u_grid), spline.dx(u_grid))
+    return np.column_stack((x, y, yaw))
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +188,14 @@ def fit_spline(waypoints: np.ndarray, order: int) -> ParametricSpline:
     x_spl = make_interp_spline(u, waypoints[:, 0], k=k)
     y_spl = make_interp_spline(u, waypoints[:, 1], k=k)
     return ParametricSpline(x_spl=x_spl, y_spl=y_spl)
+
+
+def _rigid_transform_to_origin(points: np.ndarray, x0: float, y0: float, yaw0: float) -> np.ndarray:
+    """Translate `(x0, y0)` to the origin and rotate `yaw0` to zero heading."""
+    cos_a, sin_a = math.cos(-yaw0), math.sin(-yaw0)
+    dx = points[:, 0] - x0
+    dy = points[:, 1] - y0
+    return np.column_stack((dx * cos_a - dy * sin_a, dx * sin_a + dy * cos_a))
 
 
 def arclength(spline: ParametricSpline, u_max: float = 1.0,
@@ -430,12 +464,22 @@ def generate_path(path_id: int, seed: int, rng: np.random.Generator, config: dic
             )
             sync_chirp_steps = len(commands) - n_before
 
+        # Normalize geometry to start at (0, 0) with heading 0 ("robot frame
+        # relative to its own start"), matching open-loop execution: the
+        # path is driven from wherever the robot is when armed, not from
+        # its absolute workspace_bounds coordinates.
+        x0, y0 = float(spline.x(0.0)), float(spline.y(0.0))
+        yaw0 = float(math.atan2(spline.dy(0.0), spline.dx(0.0)))
+        waypoints = _rigid_transform_to_origin(waypoints, x0, y0, yaw0)
+        control_points = _rigid_transform_to_origin(
+            np.column_stack((spline.x_spl.c, spline.y_spl.c)), x0, y0, yaw0)
+
         spline_coeffs = {
             "order": order,
             "x_t": np.asarray(spline.x_spl.t),
-            "x_c": np.asarray(spline.x_spl.c),
+            "x_c": control_points[:, 0],
             "y_t": np.asarray(spline.y_spl.t),
-            "y_c": np.asarray(spline.y_spl.c),
+            "y_c": control_points[:, 1],
         }
         coverage_target_dict = {
             "profile_type": profile_type,

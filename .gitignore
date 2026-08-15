@@ -1,5 +1,19 @@
-log/
-install/
-build/
+# ROS 2 / colcon
+/build/
+/install/
+/log/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Local environments/tools
 .venv/
+venv/
 .claude/
+.vscode/
+.idea/

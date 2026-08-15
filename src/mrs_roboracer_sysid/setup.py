@@ -13,8 +13,6 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'launch'),
-            glob(os.path.join('launch', '*_launch.py'))),
         (os.path.join('share', package_name, 'config'),
             glob(os.path.join('config', '*.yaml'))),
     ],
@@ -30,6 +28,7 @@ setup(
         'console_scripts': [
             'sysid_data_collector = mrs_roboracer_sysid.sysid_data_collector:main',
             'odom_to_pose_adapter_node = mrs_roboracer_sysid.odom_to_pose_adapter:main',
+            'mocap_pose_adapter_node = mrs_roboracer_sysid.mocap_pose_adapter:main',
             'sysid_bag_to_dataset = mrs_roboracer_sysid.bag_to_dataset:main',
         ],
     },

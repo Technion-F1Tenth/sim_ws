@@ -45,6 +45,9 @@ Two ROS packages, because rosidl message generation requires `ament_cmake`:
   - `odom_to_pose_adapter.py` -- **dev-only** node that republishes
     `/ego_racecar/odom` as `PoseStamped`/`TwistStamped` so the node can be
     developed/tested in sim without a mocap system.
+  - `mocap_pose_adapter.py` -- republishes one named
+    `mocap4r2_msgs/RigidBodies` entry from `mocap4r2_optitrack_driver` as
+    `PoseStamped`, for real mocap runs (see §6).
   - `sysid_data_collector.py` -- the main node and state machine.
   - `bag_to_dataset.py` -- offline `rosbag2` -> flat-table extraction
     (`sysid_bag_to_dataset` console script).
@@ -53,16 +56,16 @@ Two ROS packages, because rosidl message generation requires `ament_cmake`:
 
 ```bash
 cd /home/mrslab3/sim_ws
-colcon build --symlink-install --packages-select mrs_roboracer_sysid_msgs mrs_roboracer_sysid
+colcon build --symlink-install --packages-select mrs_roboracer_sysid_msgs mrs_roboracer_sysid mrs_roboracer_bringup
 source install/setup.bash
 ```
 
 ## 4. Quick start (sim/dev)
 
 1. Launch the f1tenth_gym_ros sim separately (not part of this package).
-2. Launch this package's sim bringup (adapter + collector + `safety_node`):
+2. Launch the sim bringup (adapter + collector + `safety_node`) from `mrs_roboracer_bringup`:
    ```bash
-   ros2 launch mrs_roboracer_sysid sysid_sim_launch.py
+   ros2 launch mrs_roboracer_bringup sysid_sim_launch.py
    ```
 3. Start a session (generates all `paths.N` paths, starts `ros2 bag record`):
    ```bash
@@ -114,26 +117,60 @@ All parameters live in `config/sysid_params.yaml`, grouped by dotted prefix:
   there and in `bag_to_dataset.py`.
 - **`sync.*`** -- sync-chirp amplitude/duration/speed, prepended to every
   path when `enable_sync_chirp` is true.
+- **`visualization.*`** -- active-path visualization. When
+  `visualization.publish_path` is true, the currently armed spline is
+  published as `nav_msgs/Path` on `visualization.path_topic` (default
+  `/sysid/path`) in `visualization.path_frame` (default `map`).
 - **`safety.*`** -- `pose_timeout_ms` (watchdog threshold, checked at
   `watchdog_rate_hz` independent of the control loop), `path_timeout_s`
   (abort an in-progress path), `settle_v_eps`/`settle_confirm_s` (SETTLE
   exit condition), `settle_timeout_s` (SETTLE fallback to `IDLE`).
 
-## 6. Mocap integration (deferred)
+## 6. Mocap integration
 
-`sysid_mocap_launch.py` is structurally identical to the sim launch but
-drops `odom_to_pose_adapter` (the mocap bridge is expected to publish
-`PoseStamped`/`TwistStamped` directly). Before using it:
+Ground truth comes from a lab OptiTrack system via
+[`mocap4ros2_optitrack`](https://github.com/MOCAP4ROS2-Project/mocap4ros2_optitrack)
+(`mocap4r2_optitrack_driver`), run as a separate package/workspace -- it is
+not vendored into this repo. The driver:
 
-- Pin `pose_topic`/`twist_topic` to the real mocap bridge's topic names
-  (currently placeholders `/mocap/pose`, `/mocap/twist`).
-- Confirm the mocap twist frame convention. `bag_to_dataset.py`'s
-  `v_meas_l_mocap_twist` column assumes **world-frame** `(vx, vy)`
-  projected onto heading (`MocapTwistEstimator`); if the mocap twist is
-  body-frame, that column will be wrong until this is corrected.
+- Is a **lifecycle node** (`mocap4r2_optitrack_driver_node`); after
+  launching it, you must activate it:
+  ```bash
+  ros2 launch mocap4r2_optitrack_driver optitrack2.launch.py
+  ros2 lifecycle set /mocap4r2_optitrack_driver_node activate
+  ```
+- Publishes `rigid_bodies` (`mocap4r2_msgs/msg/RigidBodies`): one message
+  per mocap frame, `header` + `RigidBody[]`, each with a `rigid_body_name`
+  (as configured in Motive) and a `geometry_msgs/Pose`. `header.frame_id`
+  is hardcoded `"map"` by the driver. There is **no native PoseStamped
+  output and no twist/velocity output**.
+
+`mocap_pose_adapter.py` bridges this: it subscribes to `rigid_bodies`,
+picks the body matching the `rigid_body_name` parameter, and republishes it
+as `geometry_msgs/PoseStamped` on `pose_topic` (default `/mocap/pose`),
+which feeds `sysid_data_collector` exactly like `odom_to_pose_adapter.py`
+does in sim. `sysid_mocap_launch.py` launches this adapter alongside
+`sysid_data_collector` + `safety_node`:
+
+```bash
+ros2 launch mrs_roboracer_bringup sysid_mocap_launch.py rigid_body_name:=<asset_name>
+```
+
+Notes:
+
+- **No twist is bridged.** Since the driver has no velocity output,
+  `twist_topic` defaults to `""`. Velocity comes from
+  `velocity_estimators.PoseDerivativeEstimator` (pose-derivative), the same
+  source already used for the online SETTLE check and as the primary
+  offline `v_meas_l` column -- no new differentiation logic was added.
 - Decide whether `io.odom_topic` (onboard VESC odometry) is available and
   worth recording alongside mocap ground truth.
 - Re-tune `safety.pose_timeout_ms` for the mocap system's actual rate/latency.
+- **Open/unverified: axis convention.** The driver does no axis conversion
+  in code, so whether the rigid body's pose matches the ROS REP103
+  (Z-up, right-handed) convention depends entirely on how the coordinate
+  system is calibrated in Motive. Verify this empirically (e.g. check a
+  known-stationary orientation) before trusting `theta_l`/yaw downstream.
 
 ## 7. Safety
 

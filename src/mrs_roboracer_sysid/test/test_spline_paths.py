@@ -15,6 +15,7 @@ from mrs_roboracer_sysid.spline_paths import (
     generate_path,
     invert_to_commands,
     sample_waypoints,
+    sample_generated_path,
     save_generated_paths,
 )
 
@@ -172,6 +173,21 @@ def test_generate_path_corner_probe_uses_arc_waypoints():
     assert result is not None
     kappas = np.array([c.kappa for c in result.commands])
     np.testing.assert_allclose(np.mean(kappas), 1.0, rtol=0.2)
+
+
+def test_sample_generated_path_uses_stored_spline_geometry():
+    rng = np.random.default_rng(123)
+    config = _base_config()
+    target = _FakeCoverageTarget(profile_type="speed_sweep", kappa_center=0.0)
+    result = generate_path(path_id=3, seed=123, rng=rng, config=config, coverage_target=target)
+    assert result is not None
+
+    samples = sample_generated_path(result, n_samples=25)
+
+    assert samples.shape == (25, 3)
+    np.testing.assert_allclose(samples[0, :2], result.waypoints[0], atol=1e-8)
+    np.testing.assert_allclose(samples[-1, :2], result.waypoints[-1], atol=1e-8)
+    assert np.all(np.isfinite(samples))
 
 
 def test_save_generated_paths_roundtrip(tmp_path):

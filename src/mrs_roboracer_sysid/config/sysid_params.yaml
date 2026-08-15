@@ -41,6 +41,11 @@ sysid_data_collector:
     io.drive_topic: "/safe_drive"
     io.bag_path: "/home/mrslab3/sysid_bags/session"
 
+    visualization.publish_path: true
+    visualization.path_topic: "/sysid/path"
+    visualization.path_frame: "map"
+    visualization.path_num_samples: 200
+
     velocity.velocity_source: "pose_derivative"
     velocity.sg_window: 9
     velocity.sg_order: 2

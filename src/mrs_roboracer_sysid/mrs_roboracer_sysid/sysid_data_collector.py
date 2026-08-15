@@ -9,6 +9,7 @@ does NOT compute residuals or fit anything.
 """
 
 import json
+import math
 import signal
 import subprocess
 from enum import IntEnum
@@ -17,10 +18,11 @@ import numpy as np
 import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 
 from ackermann_msgs.msg import AckermannDriveStamped
 from geometry_msgs.msg import PoseStamped, TwistStamped
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 from std_srvs.srv import Trigger
 
 from mrs_roboracer_sysid_msgs.msg import SysidMeta
@@ -28,7 +30,11 @@ from mrs_roboracer_sysid_msgs.msg import SysidMeta
 from mrs_roboracer_sysid.coverage import CoverageTracker
 from mrs_roboracer_sysid.motion_model import quaternion_to_yaw
 from mrs_roboracer_sysid.pose_watchdog import PoseStalenessWatchdog, WatchdogStatus
-from mrs_roboracer_sysid.spline_paths import generate_path, save_generated_paths
+from mrs_roboracer_sysid.spline_paths import (
+    generate_path,
+    sample_generated_path,
+    save_generated_paths,
+)
 from mrs_roboracer_sysid.velocity_estimators import PoseDerivativeEstimator
 
 
@@ -86,6 +92,11 @@ _PARAM_DEFAULTS = {
     "io.odom_topic": "/ego_racecar/odom",
     "io.drive_topic": "/safe_drive",
     "io.bag_path": "/home/mrslab3/sysid_bags/session",
+
+    "visualization.publish_path": True,
+    "visualization.path_topic": "/sysid/path",
+    "visualization.path_frame": "map",
+    "visualization.path_num_samples": 200,
 
     "velocity.velocity_source": "pose_derivative",
     "velocity.sg_window": 9,
@@ -156,6 +167,12 @@ class SysidDataCollector(Node):
         self.safe_drive_pub = self.create_publisher(
             AckermannDriveStamped, self.config["io"]["drive_topic"], 10)
         self.meta_pub = self.create_publisher(SysidMeta, '/sysid/meta', 10)
+        self.path_pub = None
+        if self.config["visualization"]["publish_path"]:
+            path_qos = QoSProfile(depth=1)
+            path_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
+            self.path_pub = self.create_publisher(
+                Path, self.config["visualization"]["path_topic"], path_qos)
 
         # subscribers (stash latest msg + receive time only; no online processing)
         self.pose_sub = self.create_subscription(
@@ -278,6 +295,7 @@ class SysidDataCollector(Node):
         self.t_start = self.get_clock().now()
         self.state = State.EXECUTE
         path = self.generated_paths[self.path_index]
+        self._publish_path_visualization(path, self.t_start, origin_pose=self.last_pose_xytheta)
         response.success = True
         response.message = f"armed path {path.path_id} ({len(path.commands)} steps)"
         return response
@@ -290,6 +308,8 @@ class SysidDataCollector(Node):
         io_cfg = self.config["io"]
         bag_path = io_cfg["bag_path"]
         topics = [io_cfg["drive_topic"], "/drive", "/sysid/meta", io_cfg["pose_topic"]]
+        if self.path_pub is not None:
+            topics.append(self.config["visualization"]["path_topic"])
         if io_cfg["twist_topic"]:
             topics.append(io_cfg["twist_topic"])
         if io_cfg["odom_topic"]:
@@ -323,18 +343,30 @@ class SysidDataCollector(Node):
 
     def _generate_all_paths(self) -> bool:
         n_paths = int(self.config["paths"]["N"])
+        max_attempts = self.config["paths"]["max_generation_attempts"]
         self.generated_paths = []
-        for path_id in range(n_paths):
+        n_skipped = 0
+        for attempt_id in range(n_paths):
             target = self.coverage_tracker.next_target()
-            gp = generate_path(path_id, self.rng_seed, self.rng, self.config, target)
+            gp = generate_path(len(self.generated_paths), self.rng_seed, self.rng,
+                               self.config, target)
             if gp is None:
-                max_attempts = self.config["paths"]["max_generation_attempts"]
-                self.get_logger().error(
-                    f"failed to generate path {path_id} "
+                n_skipped += 1
+                self.get_logger().warn(
+                    f"failed to generate path {attempt_id} "
                     f"(profile={target.profile_type}, kappa_center={target.kappa_center:.3f}) "
-                    f"after {max_attempts} attempts")
-                return False
+                    f"after {max_attempts} attempts; skipping")
+                continue
             self.generated_paths.append(gp)
+
+        if not self.generated_paths:
+            self.get_logger().error("failed to generate any paths")
+            return False
+
+        if n_skipped:
+            self.get_logger().warn(
+                f"path generation: {len(self.generated_paths)}/{n_paths} paths generated "
+                f"({n_skipped} skipped after generation failures)")
 
         save_generated_paths(self.generated_paths, self.persist_dir)
         self.get_logger().info(
@@ -447,6 +479,55 @@ class SysidDataCollector(Node):
     # ------------------------------------------------------------------
     # Output publishing
     # ------------------------------------------------------------------
+
+    def _publish_path_visualization(self, path, stamp=None, origin_pose=None) -> None:
+        """
+        Publish the sampled path in `visualization.path_frame`.
+
+        Stored path geometry starts at (0, 0) with heading 0 ("robot frame
+        relative to its own start"), since the path is executed open-loop
+        starting from wherever the robot is when armed. `origin_pose`
+        (x, y, theta), if given, anchors the path's first sample to the
+        robot's actual pose so the visualization overlays where the robot
+        will actually drive.
+        """
+        if self.path_pub is None:
+            return
+
+        if stamp is None:
+            stamp = self.get_clock().now()
+
+        msg = Path()
+        msg.header.stamp = stamp.to_msg()
+        msg.header.frame_id = self.config["visualization"]["path_frame"]
+
+        n_samples = max(2, int(self.config["visualization"]["path_num_samples"]))
+        samples = sample_generated_path(path, n_samples=n_samples)
+
+        if origin_pose is not None:
+            x0, y0, yaw0 = samples[0]
+            x_r, y_r, theta_r = origin_pose
+            dtheta = theta_r - yaw0
+            cos_d, sin_d = math.cos(dtheta), math.sin(dtheta)
+            dx, dy = samples[:, 0] - x0, samples[:, 1] - y0
+            samples = np.column_stack((
+                x_r + dx * cos_d - dy * sin_d,
+                y_r + dx * sin_d + dy * cos_d,
+                samples[:, 2] + dtheta,
+            ))
+
+        for x, y, yaw in samples:
+            pose = PoseStamped()
+            pose.header.stamp = msg.header.stamp
+            pose.header.frame_id = msg.header.frame_id
+            pose.pose.position.x = float(x)
+            pose.pose.position.y = float(y)
+            pose.pose.position.z = 0.0
+            pose.pose.orientation.z = math.sin(0.5 * float(yaw))
+            pose.pose.orientation.w = math.cos(0.5 * float(yaw))
+            msg.poses.append(pose)
+
+        self.path_pub.publish(msg)
 
     def _publish_outputs(self, now, cmd=None, path=None, t_intended=None) -> None:
         if t_intended is None:
