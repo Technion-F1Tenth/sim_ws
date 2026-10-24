@@ -2,8 +2,10 @@
 Main sysid node: state machine, path execution, bag recording.
 
 Per the sysid spec: this node generates open-loop (v, delta) command
-sequences, executes them via `/safe_drive` (never `/drive` directly --
-that's the mux/safety_node's output), and records everything to a
+sequences (smooth splines, or held-rate-step programs when
+`paths.mode == "rate_steps"`; see rate_steps.py), executes them via
+`/safe_drive` (never `/drive` directly -- that's the mux/safety_node's
+output), and records everything to a
 rosbag2 for offline noise-model fitting. It logs raw synced data and
 does NOT compute residuals or fit anything.
 """
@@ -30,6 +32,11 @@ from mrs_roboracer_sysid_msgs.msg import SysidMeta
 from mrs_roboracer_sysid.coverage import CoverageTracker
 from mrs_roboracer_sysid.motion_model import quaternion_to_yaw
 from mrs_roboracer_sysid.pose_watchdog import PoseStalenessWatchdog, WatchdogStatus
+from mrs_roboracer_sysid.rate_steps import (
+    InputCoverage,
+    RateStepConfig,
+    generate_rate_step_path,
+)
 from mrs_roboracer_sysid.spline_paths import (
     generate_path,
     sample_generated_path,
@@ -63,6 +70,7 @@ _PARAM_DEFAULTS = {
     "limits.a_lat_max_safe": 4.0,
     "limits.a_lat_probe_max": 8.0,
 
+    "paths.mode": "spline",
     "paths.N": 30,
     "paths.spline_order": 5,
     "paths.waypoints_per_path": 6,
@@ -84,6 +92,22 @@ _PARAM_DEFAULTS = {
     "coverage.figure8_speed": 1.5,
     "coverage.prioritize_corner_first": True,
     "coverage.corner_probe_paths": 2,
+
+    "steps.u1_levels": [-3.0, -1.5, 0.0, 1.5, 3.0],
+    "steps.u2_levels": [-3.0, -1.5, 0.0, 1.5, 3.0],
+    "steps.min_segment_s": 0.2,
+    "steps.max_segment_s": 0.6,
+    "steps.segments_per_path": 15,
+    "steps.min_arc_m": 0.2,
+    "steps.v_min_steer": 1.0,
+    "steps.delta_margin": 0.02,
+    "steps.max_excursion_m": 3.0,
+    "steps.stop_decel": 2.0,
+    "steps.lead_in_accel": 1.5,
+    "steps.lead_in_speed": 1.0,
+    "steps.v_band_edges": [0.0, 1.0, 1.75, 3.0],
+    "steps.tau_v": 0.0,
+    "steps.tau_delta": 0.0,
 
     "rate.control_rate_hz": 50.0,
 
@@ -139,6 +163,18 @@ class SysidDataCollector(Node):
             corner_probe_paths=self.config["coverage"]["corner_probe_paths"],
         )
 
+        self.mode = self.config["paths"]["mode"]
+        if self.mode not in ("spline", "rate_steps"):
+            raise ValueError(f"paths.mode must be 'spline' or 'rate_steps', got {self.mode!r}")
+        self.rate_step_config = None
+        self.input_coverage = None
+        if self.mode == "rate_steps":
+            self.rate_step_config = RateStepConfig.from_config(self.config)
+            self.input_coverage = InputCoverage(
+                self.rate_step_config.u1_levels, self.rate_step_config.u2_levels,
+                self.rate_step_config.v_band_edges, self.rate_step_config.min_arc_m)
+        self.get_logger().info(f"sysid_data_collector: paths.mode={self.mode}")
+
         persist_dir = self.config["paths"]["persist_dir"]
         self.persist_dir = persist_dir if persist_dir else self.config["io"]["bag_path"] + "_paths"
 
@@ -161,6 +197,7 @@ class SysidDataCollector(Node):
 
         self._settle_confirm_start = None
         self._settle_enter_time = None
+        self._settle_warned = False
         self.settle_velocity_estimator = self._new_settle_estimator()
 
         # publishers: /safe_drive only -- never /drive (that's safety_node's output)
@@ -346,7 +383,23 @@ class SysidDataCollector(Node):
         max_attempts = self.config["paths"]["max_generation_attempts"]
         self.generated_paths = []
         n_skipped = 0
+        next_segment_id = 0
         for attempt_id in range(n_paths):
+            if self.mode == "rate_steps":
+                gp = generate_rate_step_path(
+                    len(self.generated_paths), self.rng_seed, self.rng,
+                    self.rate_step_config, self.input_coverage,
+                    sync_cfg=self.config["sync"], segment_id_start=next_segment_id)
+                if gp is None:
+                    n_skipped += 1
+                    self.get_logger().warn(
+                        f"failed to fit any held-rate segment in program {attempt_id} "
+                        "(check steps.max_excursion_m and limits); skipping")
+                    continue
+                next_segment_id = max(c.segment_id for c in gp.commands) + 1
+                self.generated_paths.append(gp)
+                continue
+
             target = self.coverage_tracker.next_target()
             gp = generate_path(len(self.generated_paths), self.rng_seed, self.rng,
                                self.config, target)
@@ -371,6 +424,12 @@ class SysidDataCollector(Node):
         save_generated_paths(self.generated_paths, self.persist_dir)
         self.get_logger().info(
             f"Generated {len(self.generated_paths)} paths, persisted to {self.persist_dir}")
+        if self.input_coverage is not None:
+            planned = self.input_coverage.report()
+            self.get_logger().info(
+                f"rate_steps: {planned['segments_total']} measurement segments planned, "
+                f"{planned['steering_segments_passing_arc_gate']} steering segments "
+                f"pass the {self.rate_step_config.min_arc_m} m arc gate")
         return True
 
     # ------------------------------------------------------------------
@@ -406,6 +465,7 @@ class SysidDataCollector(Node):
             self.state = State.SETTLE
             self._settle_confirm_start = None
             self._settle_enter_time = now
+            self._settle_warned = False
             self.settle_velocity_estimator = self._new_settle_estimator()
             return
 
@@ -438,11 +498,16 @@ class SysidDataCollector(Node):
                 else:
                     self._settle_confirm_start = None
 
+        # No timeout abort: the operator may drive the car back (RC/joystick)
+        # before it ever comes to rest, so SETTLE waits for v~0 indefinitely
+        # instead of ending the session. settle_timeout_s only triggers a hint.
         settle_elapsed_s = (now - self._settle_enter_time).nanoseconds / 1e9
-        if settle_elapsed_s > self.config["safety"]["settle_timeout_s"]:
-            self.get_logger().warn("SETTLE timed out without confirming v~0; returning to IDLE")
-            self._stop_bag_recording()
-            self.state = State.IDLE
+        if (not self._settle_warned
+                and settle_elapsed_s > self.config["safety"]["settle_timeout_s"]):
+            self._settle_warned = True
+            self.get_logger().warn(
+                f"SETTLE: car not stationary after {settle_elapsed_s:.1f} s; still waiting "
+                f"(|v| < {settle_v_eps} m/s for {settle_confirm_s} s advances to ARMED)")
 
     def _advance_after_settle(self) -> None:
         if self.path_index + 1 < len(self.generated_paths):
@@ -466,6 +531,8 @@ class SysidDataCollector(Node):
     def _finalize_session(self) -> None:
         self._stop_bag_recording()
         report = self.coverage_tracker.report()
+        if self.input_coverage is not None:
+            report["input_coverage"] = self.input_coverage.report()
         report_path = self.config["io"]["bag_path"] + "_coverage_report.json"
         try:
             with open(report_path, "w") as f:
@@ -562,6 +629,11 @@ class SysidDataCollector(Node):
             meta.flag_sync_chirp = cmd.flag_sync_chirp
             meta.flag_high_lat_accel = cmd.flag_high_lat_accel
             meta.dt = cmd.dt
+            meta.segment_id = cmd.segment_id
+            meta.u1_cmd = cmd.u1
+            meta.u2_cmd = cmd.u2
+            meta.v_ref = cmd.v if cmd.v_ref is None else cmd.v_ref
+            meta.delta_ref = cmd.delta if cmd.delta_ref is None else cmd.delta_ref
         else:
             meta.path_id = (self.generated_paths[self.path_index].path_id
                             if self.generated_paths else 0)
@@ -569,6 +641,7 @@ class SysidDataCollector(Node):
             meta.coverage_bin_kappa = -1
             meta.coverage_bin_id = -1
             meta.dt = self.control_dt
+            meta.segment_id = -1
 
         self.meta_pub.publish(meta)
 

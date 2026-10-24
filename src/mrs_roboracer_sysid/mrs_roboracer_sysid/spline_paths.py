@@ -69,6 +69,17 @@ class CommandStep:
     flag_high_lat_accel: bool
     dt: float
     flag_sync_chirp: bool = False
+    # Held-rate-step programs only (see rate_steps.py): the (u1, u2) =
+    # (acceleration, steering rate) held over measurement segment
+    # `segment_id`. -1 / 0.0 for spline paths and sync-chirp steps.
+    segment_id: int = -1
+    u1: float = 0.0
+    u2: float = 0.0
+    # Reference (v, delta) the held rates integrate; `v`/`delta` above are
+    # the published setpoints, which lead the reference when first-order lag
+    # compensation is on. None means published == reference.
+    v_ref: Optional[float] = None
+    delta_ref: Optional[float] = None
 
 
 @dataclass
@@ -80,6 +91,9 @@ class GeneratedPath:
     commands: List[CommandStep]
     coverage_target: dict
     sync_chirp_steps: int = 0
+    # Nx3 (x, y, yaw) predicted geometry, used instead of the spline for
+    # visualization when `spline_coeffs` is None (held-rate-step programs).
+    preview_xytheta: Optional[np.ndarray] = None
 
 
 def spline_from_coeffs(spline_coeffs: dict) -> ParametricSpline:
@@ -99,6 +113,11 @@ def sample_generated_path(path: GeneratedPath, n_samples: int = 200) -> np.ndarr
     """
     if n_samples < 2:
         raise ValueError("n_samples must be at least 2")
+
+    if path.spline_coeffs is None:
+        preview = np.asarray(path.preview_xytheta, dtype=float)
+        idx = np.linspace(0, len(preview) - 1, n_samples).round().astype(int)
+        return preview[idx]
 
     spline = spline_from_coeffs(path.spline_coeffs)
     u_grid = np.linspace(0.0, 1.0, n_samples)
@@ -190,7 +209,8 @@ def fit_spline(waypoints: np.ndarray, order: int) -> ParametricSpline:
     return ParametricSpline(x_spl=x_spl, y_spl=y_spl)
 
 
-def _rigid_transform_to_origin(points: np.ndarray, x0: float, y0: float, yaw0: float) -> np.ndarray:
+def _rigid_transform_to_origin(points: np.ndarray, x0: float, y0: float,
+                               yaw0: float) -> np.ndarray:
     """Translate `(x0, y0)` to the origin and rotate `yaw0` to zero heading."""
     cos_a, sin_a = math.cos(-yaw0), math.sin(-yaw0)
     dx = points[:, 0] - x0
@@ -508,11 +528,25 @@ def save_generated_paths(paths: List[GeneratedPath], out_dir: str) -> None:
     for p in paths:
         cmd_array = np.array([
             (c.step_index, c.v, c.delta, c.kappa, c.lat_accel,
-             float(c.flag_high_lat_accel), c.dt, float(c.flag_sync_chirp))
+             float(c.flag_high_lat_accel), c.dt, float(c.flag_sync_chirp),
+             c.segment_id, c.u1, c.u2,
+             c.v if c.v_ref is None else c.v_ref,
+             c.delta if c.delta_ref is None else c.delta_ref)
             for c in p.commands
         ], dtype=np.float64)
 
         out_path = os.path.join(out_dir, f"path_{p.path_id:03d}.npz")
+        extra = {}
+        if p.spline_coeffs is not None:
+            extra.update(
+                spline_order=p.spline_coeffs["order"],
+                spline_x_t=p.spline_coeffs["x_t"],
+                spline_x_c=p.spline_coeffs["x_c"],
+                spline_y_t=p.spline_coeffs["y_t"],
+                spline_y_c=p.spline_coeffs["y_c"],
+            )
+        if p.preview_xytheta is not None:
+            extra["preview_xytheta"] = p.preview_xytheta
         np.savez(
             out_path,
             path_id=p.path_id,
@@ -520,11 +554,7 @@ def save_generated_paths(paths: List[GeneratedPath], out_dir: str) -> None:
             waypoints=p.waypoints,
             commands=cmd_array,
             sync_chirp_steps=p.sync_chirp_steps,
-            spline_order=p.spline_coeffs["order"],
-            spline_x_t=p.spline_coeffs["x_t"],
-            spline_x_c=p.spline_coeffs["x_c"],
-            spline_y_t=p.spline_coeffs["y_t"],
-            spline_y_c=p.spline_coeffs["y_c"],
             coverage_profile_type=p.coverage_target["profile_type"],
-            coverage_kappa_center=p.coverage_target["kappa_center"],
+            coverage_kappa_center=p.coverage_target.get("kappa_center", 0.0),
+            **extra,
         )

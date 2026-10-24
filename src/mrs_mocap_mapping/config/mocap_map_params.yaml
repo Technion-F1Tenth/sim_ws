@@ -1,0 +1,56 @@
+# mocap_map_node parameters. Floats must be written with a decimal point
+# (e.g. 10.0, not 10): rclpy rejects an int for a double parameter.
+mocap_map:
+  ros__parameters:
+    # mocap4r2_optitrack_driver outputs
+    markers_topic: /markers
+    rigid_bodies_topic: /rigid_bodies
+    # Motive asset name of the car. Its markers are never offered as obstacle
+    # vertices; its pose drives the mocap TF subtree and /mocap_odom.
+    car_rigid_body_name: ''
+    # Up axis of the incoming mocap data: 'z' or 'y' (Motive's default is Y-up).
+    # The UI shows the raw per-axis marker spread to help check this on site.
+    up_axis: z
+    # Mocap TF subtree map -> base_frame -> laser_frame, parallel to the car's own
+    # odom -> base_link -> laser (a frame can have only one TF parent).
+    map_frame: map
+    base_frame: mocap_base_link
+    laser_frame: mocap_laser
+    publish_tf: true
+    # [x, y, z, yaw] from the Motive rigid-body pivot to the car's base_link (rear axle),
+    # in the body frame. Also fixes a body whose local +x is not forward (yaw term).
+    body_to_base: [0.0, 0.0, 0.0, 0.0]
+    # [x, y, z, yaw] base_link -> laser; must match the real car (f1tenth_gym default).
+    base_to_laser: [0.275, 0.0, 0.0, 0.0]
+
+    # nav_msgs/Odometry of mocap_base_link in map_frame; twist (body frame) from a causal
+    # least-squares fit over the last twist_window mocap samples.
+    odom_topic: /mocap_odom
+    twist_window: 9
+    pose_cov: 0.000001
+    twist_cov: 0.001
+
+    # The car's scan relayed with frame_id = laser_frame so it can be drawn in the
+    # mocap frame. Empty mocap_scan_topic disables the relay.
+    scan_topic: /scan
+    mocap_scan_topic: /mocap_scan
+    car_exclusion_radius: 0.3     # m, markers this close to the car centre are treated as car markers
+    car_marker_tolerance: 0.02    # m, markers this close to a car body marker are car markers
+    marker_match_tolerance: 0.05  # m, UI selection -> live marker matching tolerance
+
+    map_topic: /mocap_map
+    # Obstacles + grid live here (JSON); Save also writes <name>.pgm/.yaml for nav2_map_server.
+    # If the file exists at startup it is loaded and the grid.* parameters below are ignored.
+    map_file: ~/mocap_maps/arena.json
+    map_publish_period: 1.0
+
+    grid:
+      resolution: 0.05
+      origin_x: -5.0
+      origin_y: -5.0
+      size_x: 10.0
+      size_y: 10.0
+
+    web:
+      host: 0.0.0.0
+      port: 8080

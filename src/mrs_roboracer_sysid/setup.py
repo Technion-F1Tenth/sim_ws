@@ -30,6 +30,7 @@ setup(
             'odom_to_pose_adapter_node = mrs_roboracer_sysid.odom_to_pose_adapter:main',
             'mocap_pose_adapter_node = mrs_roboracer_sysid.mocap_pose_adapter:main',
             'sysid_bag_to_dataset = mrs_roboracer_sysid.bag_to_dataset:main',
+            'sysid_fit_input_noise = mrs_roboracer_sysid.fit_input_noise:main',
         ],
     },
 )

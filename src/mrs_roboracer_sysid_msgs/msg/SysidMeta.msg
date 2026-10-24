@@ -41,3 +41,16 @@ float64 loop_jitter_s
 
 float64 dt
 uint32 rng_seed
+
+# Held-rate-step programs (paths.mode = "rate_steps") only. u1 = commanded
+# longitudinal acceleration (m/s^2), u2 = commanded steering rate (rad/s),
+# both held constant over one segment. segment_id is -1 outside a
+# measurement segment (sync chirp, spline mode, idle/settle).
+int32 segment_id
+float64 u1_cmd
+float64 u2_cmd
+# Reference (v, delta) integrated from the held rates. v_cmd/delta_cmd are
+# the published setpoints, which lead the reference by tau * u when
+# first-order lag compensation (steps.tau_v / steps.tau_delta) is on.
+float64 v_ref
+float64 delta_ref

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mocap Map Editor</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <div id="canvas-wrap">
+      <canvas id="view"></canvas>
+      <div id="hud">
+        <span id="hud-cursor">x —, y —</span>
+        <span class="hint">click: select marker · shift-drag: box select · drag: pan · wheel: zoom</span>
+      </div>
+    </div>
+
+    <aside>
+      <section>
+        <h2>Status</h2>
+        <dl class="kv">
+          <dt>Markers</dt><dd id="st-markers">—</dd>
+          <dt>Car</dt><dd id="st-car">—</dd>
+          <dt>Up axis</dt><dd id="st-up">—</dd>
+          <dt>Raw spread</dt><dd id="st-spread">—</dd>
+        </dl>
+        <p id="st-note" class="warn" hidden></p>
+      </section>
+
+      <section>
+        <h2>New obstacle <span id="sel-count" class="badge">0 selected</span></h2>
+        <div class="seg" id="kind">
+          <button data-kind="polygon" class="on">Polygon</button>
+          <button data-kind="polyline">Thin wall</button>
+          <button data-kind="loop">Closed loop</button>
+        </div>
+        <div class="row">
+          <label>Order
+            <select id="order">
+              <option value="">default</option>
+              <option value="hull">convex hull</option>
+              <option value="as_given">as clicked</option>
+              <option value="auto">auto (shortest)</option>
+            </select>
+          </label>
+          <label>Name <input id="name" placeholder="auto"></label>
+        </div>
+        <div class="row">
+          <label id="width-label">Width [m] <input id="width" type="number" step="0.01" min="0" value="0.10"></label>
+          <label>Inflation [m] <input id="inflation" type="number" step="0.01" min="0" value="0.00"></label>
+        </div>
+        <div class="row">
+          <button id="btn-create" class="primary">Create obstacle</button>
+          <button id="btn-clear">Clear selection</button>
+        </div>
+        <p id="preview-msg" class="muted"></p>
+      </section>
+
+      <section>
+        <h2>Obstacles</h2>
+        <ul id="obstacles"></ul>
+      </section>
+
+      <section>
+        <h2>Grid</h2>
+        <div class="row">
+          <label>Resolution [m] <input id="g-res" type="number" step="0.01" min="0.005"></label>
+          <label>Fit margin [m] <input id="g-margin" type="number" step="0.1" value="0.5"></label>
+        </div>
+        <div class="row">
+          <label>Origin x [m] <input id="g-ox" type="number" step="0.1"></label>
+          <label>Origin y [m] <input id="g-oy" type="number" step="0.1"></label>
+        </div>
+        <div class="row">
+          <label>Size x [m] <input id="g-sx" type="number" step="0.1" min="0.1"></label>
+          <label>Size y [m] <input id="g-sy" type="number" step="0.1" min="0.1"></label>
+        </div>
+        <div class="row">
+          <button id="btn-grid">Apply</button>
+          <button id="btn-fit">Fit to obstacles</button>
+          <button id="btn-save" class="primary">Save map</button>
+        </div>
+        <p id="grid-msg" class="muted"></p>
+      </section>
+
+      <section>
+        <h2>View</h2>
+        <label class="check"><input id="v-occ" type="checkbox" checked> Occupancy overlay</label>
+        <label class="check"><input id="v-lines" type="checkbox" checked> Metric grid</label>
+        <div class="row"><button id="btn-fitview">Fit view</button></div>
+      </section>
+
+      <p id="toast" role="status"></p>
+    </aside>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

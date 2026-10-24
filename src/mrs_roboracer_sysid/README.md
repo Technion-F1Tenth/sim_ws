@@ -124,7 +124,9 @@ All parameters live in `config/sysid_params.yaml`, grouped by dotted prefix:
 - **`safety.*`** -- `pose_timeout_ms` (watchdog threshold, checked at
   `watchdog_rate_hz` independent of the control loop), `path_timeout_s`
   (abort an in-progress path), `settle_v_eps`/`settle_confirm_s` (SETTLE
-  exit condition), `settle_timeout_s` (SETTLE fallback to `IDLE`).
+  exit condition), `settle_timeout_s` (after this long in SETTLE without
+  coming to rest, log a warning; SETTLE keeps waiting and never ends the
+  session, so the operator can drive the car back before it stops).
 
 ## 6. Mocap integration
 
@@ -188,7 +190,7 @@ Notes:
   runtime. This is a research node: **run with an operator and RC override
   present at all times.**
 - **Abort/DONE recovery requires a fresh bag path.** Both an aborted
-  session (stale pose / path timeout / SETTLE timeout) and a completed
+  session (stale pose / path timeout) and a completed
   (`DONE`) session stop the bag recording and leave the node in a state
   where `start_session` either is refused (`DONE`) or would try to
   `ros2 bag record` into the same (now-existing) `io.bag_path` directory,
@@ -274,3 +276,160 @@ This tool explicitly does **not** compute `f(x_l, u_l)`, residuals `e_l`,
   mocap twist frame convention is unverified.
 - No geofence/capture-volume enforcement (§7) -- intentional, per current
   requirements; `paths.workspace_bounds` is sampling-domain only.
+
+## 13. Rate-input noise identification (`paths.mode: rate_steps`)
+
+For the rate-input kinematic bicycle used by the planner,
+
+```
+v_dot = u1 + w1     (acceleration, m/s^2)
+delta_dot = u2 + w2 (steering rate, rad/s)
+theta_dot = v tan(delta) / L,  x_dot = v cos(theta),  y_dot = v sin(theta)
+```
+
+the collector can instead run **held-rate-step programs** (`rate_steps.py`,
+enabled by `paths.mode: "rate_steps"`, which is the default in
+`config/sysid_params.yaml`). Each program is: sync chirp, then up to
+`steps.segments_per_path` segments that each hold `(u1, u2)` constant for
+`steps.min_segment_s`..`max_segment_s`, then a straight brake to a stop. The
+car only takes speed/angle setpoints, so the held rates are integrated into
+ramped `(v, delta)` setpoints at `rate.control_rate_hz`. Consecutive segments
+are continuous in `(v, delta)`.
+
+How segments are chosen: the least-visited `(u1, u2)` cell for the current
+speed band (`steps.v_band_edges`) that is feasible under a perfect-tracking
+rollout. Feasible means:
+- speed stays within the limits,
+- `|delta|` stays at least `steps.delta_margin` below `delta_max`,
+- lateral acceleration stays within `limits.a_lat_max_safe`,
+- the car stays inside `steps.max_excursion_m` of the **arm pose**, counting
+  stopping distance.
+
+Steering segments (`u2 != 0`) are only scheduled at `v >= steps.v_min_steer`
+and when `v_mean * T >= steps.min_arc_m`. The session log and
+`<bag_path>_coverage_report.json` (`input_coverage`) report planned segment
+counts per `(u1, u2, speed band)` cell.
+
+`/sysid/meta` carries `segment_id` (-1 outside measurement segments),
+`u1_cmd` and `u2_cmd`.
+
+**Operation:** excursion is measured from the pose at each `arm_path`, so
+drive the car back to the centre of the capture volume (RC) before each arm.
+The rollout assumes perfect setpoint tracking, so leave margin in
+`max_excursion_m`. Disable or relax the TTC AEB only if the volume is clear,
+because any `/drive` override invalidates the rest of that program (see
+below).
+
+**Small volumes:** `config/sysid_params_3x3.yaml` is tuned for a 3 x 3 m
+space. It uses `max_excursion_m` 1.2, `v_max` 2.0, a shortened chirp and 60
+programs, which comes to about 115 segments and about 70 arc-gated steering
+segments. Pass it with `params_file:=`. In that space `u1 = +3` never fits,
+and `u2 = +/-3` only fits while braking. After each program, SETTLE waits
+until the car is stationary for `settle_confirm_s` and then goes back to
+ARMED. It never ends the session, so you can drive the car back to the
+centre at any point and then call `arm_path`.
+
+### Offline
+
+```bash
+ros2 run mrs_roboracer_sysid sysid_bag_to_dataset <bag> steps.csv \
+    --pose-topic /mocap/pose --twist-topic "" --odom-topic "" \
+    --segments-output segments.csv --wheelbase 0.33 --lag-s 0.0 --min-arc-m 0.2
+ros2 run mrs_roboracer_sysid sysid_fit_input_noise segments.csv [more.csv ...] \
+    --output fit.json --plot-dir plots/
+```
+
+Per-segment residuals (`segments.py`) are one-segment predictions starting
+from the **measured** state at the segment start (`a`), evaluated at its end
+(`b`):
+
+| Channel | Residual | Propagated to input level |
+|---|---|---|
+| Acceleration | `r_v = v_b - (v_a + u1 T)` | `accel_resid = r_v / T` |
+| Steering rate | `r_yawrate = yawrate_b - v_b tan(delta_a + u2 T) / L`, with `delta_a = atan(L yawrate_a / v_a)` | `steer_rate_resid = L cos^2(delta_b) / (v_b T) * r_yawrate` |
+
+Notes:
+- Steering angle is never measured. By default it is inferred from the
+  measured yaw rate at the segment start. The `*_cmd` columns use the
+  commanded angle instead, which picks up error from earlier segments and
+  any steering trim offset.
+- `gate_arc` is `0.5 (v_a + v_b) T >= min_arc_m`.
+- `flag_safety_override` marks a segment where a `/drive` message differed
+  from `/safe_drive` (clipping or AEB). `flag_after_override` extends that
+  mark to the rest of the program.
+- `sysid_fit_input_noise` drops stale or overridden segments and requires
+  both endpoint speeds `>= --min-speed`. The steering channel also requires
+  `gate_arc` and no steering saturation. Each channel is then fit with a
+  zero-mean Gaussian MLE (`sigma^2 = mean(r^2)`) truncated at `+/- k sigma`.
+- **Check the bias diagnostics before trusting the zero-mean fit.** Each
+  channel reports `mean` (constant bias, e.g. steering trim) and
+  `corr_with_u` / `slope_vs_u` (the residual against that channel's
+  commanded rate). Uncompensated first-order lag gives a residual of
+  roughly `-(tau/T) * (u - u_prev)`, where `u_prev` is the previous
+  segment's rate. Since `u_prev` is roughly independent of `u`, the slope
+  against `u` comes out near `-tau/T`: speeding up reads low and braking
+  reads high. Over a
+  balanced set of segments those errors cancel in `mean`, so look at
+  `corr_with_u`. A clearly negative correlation means lag compensation is
+  needed (next subsection).
+
+### First-order lag compensation
+
+The planner assumes `v_dot = u1` and `delta_dot = u2`. A real speed loop
+(VESC) and steering servo lag their setpoints. Model each one as first
+order:
+
+```
+v_dot = (v_sp - v) / tau_v          delta_dot = (delta_sp - delta) / tau_delta
+```
+
+With `steps.tau_v` / `steps.tau_delta` set, the generator publishes led
+setpoints, which are the exact inverse of that lag for a held rate:
+
+```
+v_sp = v_ref + tau_v * u1           delta_sp = delta_ref + tau_delta * u2
+```
+
+The actual `(v, delta)` then follows the reference ramps, so the residuals
+measure noise around the planner's own model. Details:
+- The setpoint jumps by `tau * (change in u)` at each segment boundary.
+  That jump is intended.
+- `v_sp` is clamped at 0, so the car never reverses.
+- The feasibility checks also apply to the led setpoints, so a steering
+  lead never pushes past `delta_max - delta_margin`.
+- `/sysid/meta` logs both the published setpoints (`v_cmd`/`delta_cmd`)
+  and the reference (`v_ref`/`delta_ref`). The steps CSV has both, and the
+  segment table's `*_cmd_start/end` columns use the reference.
+- **Whatever executes planner trajectories on the car must apply the same
+  lead with the same tau.** Otherwise sigma was identified for a different
+  actuator chain than the one being driven.
+
+Pure dead time is not removed by this lead. Account for it offline with
+`--lag-s`.
+
+#### Workflow
+
+1. **Uncompensated session** (`tau_v = tau_delta = 0`). Extract it with
+   `sysid_bag_to_dataset <bag> steps.csv --segments-output segments.csv`.
+2. **Fit tau offline from `steps.csv`.** One row per 50 Hz control tick,
+   with columns `t_cmd`, published setpoints `v_cmd`/`delta_cmd`, measured
+   `v_meas_l` and `thetadot_meas_l` (pose-derivative values at the tick),
+   and `path_id`/`segment_id`.
+   - **Speed:** within each program (`path_id`), simulate
+     `v_hat_{k+1} = v_hat_k + dt / tau_v * (v_cmd_{k-d} - v_hat_k)`,
+     starting from `v_hat = v_meas_l` at the first row with
+     `segment_id >= 0`. Minimise `sum (v_meas_l - v_hat)^2` over `tau_v`,
+     plus an integer dead time `d` in ticks if needed (that dead time is
+     your `--lag-s`). Use only rows with `segment_id >= 0`; the sync chirp
+     is a pure setpoint step and is also a good isolated step response to
+     check tau against.
+   - **Steering:** same procedure, using the angle measured from yaw rate,
+     `delta_meas = atan(L * thetadot_meas_l / v_meas_l)`, on rows with
+     `v_meas_l >= ~0.5 m/s` (the inversion is ill-conditioned near
+     standstill). Compare it against `delta_cmd`.
+   - **Sanity check:** `segments.csv` from this session should show
+     `slope_vs_u` close to `-tau / T_mean` in each channel.
+3. **Compensated session** with the fitted `steps.tau_v` / `steps.tau_delta`
+   (new `bag_path`). Extract it and run `sysid_fit_input_noise`. Each
+   channel's `corr_with_u` should now be near 0 and `mean` small compared
+   with `sigma`. Report sigma from this session.
