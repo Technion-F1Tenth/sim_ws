@@ -27,6 +27,11 @@ ros2 launch mrs_roboracer_bringup reactive_driver_safety_launch.py mode:=sim|onb
 # RL policy (needs /scan + odom speed)
 ros2 launch mrs_roboracer_bringup inference_launch.py mode:=sim|onboard|mocap
 
+# Pure pursuit (C++, needs pose): tracks raceline_path:=<csv> init_path:=true,
+# or whatever nav_msgs/Path arrives on incoming_path_topic (default /planned_path)
+ros2 launch mrs_roboracer_bringup pure_pursuit_safety_launch.py mode:=sim|onboard|mocap \
+    raceline_path:=<csv> init_path:=true
+
 # System ID (needs ground truth: no onboard mode)
 ros2 launch mrs_roboracer_bringup sysid_launch.py mode:=sim|mocap [params_file:=...]
 
