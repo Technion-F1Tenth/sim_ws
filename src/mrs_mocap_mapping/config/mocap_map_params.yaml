@@ -37,6 +37,9 @@ mocap_map:
     car_exclusion_radius: 0.3     # m, markers this close to the car centre are treated as car markers
     car_marker_tolerance: 0.02    # m, markers this close to a car body marker are car markers
     marker_match_tolerance: 0.05  # m, UI selection -> live marker matching tolerance
+    # Obstacles created with "Follow markers" track their markers frame to frame.
+    track_gate: 0.1               # m, max marker jump between two mocap frames still matched
+    track_min_move: 0.01          # m, vertex motion that triggers re-rasterizing the map
 
     map_topic: /mocap_map
     # Obstacles + grid live here (JSON); Save also writes <name>.pgm/.yaml for nav2_map_server.
@@ -45,7 +48,7 @@ mocap_map:
     map_publish_period: 1.0
 
     grid:
-      resolution: 0.05
+      resolution: 0.025
       origin_x: -5.0
       origin_y: -5.0
       size_x: 10.0

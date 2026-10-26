@@ -50,6 +50,8 @@
           <label id="width-label">Width [m] <input id="width" type="number" step="0.01" min="0" value="0.10"></label>
           <label>Inflation [m] <input id="inflation" type="number" step="0.01" min="0" value="0.00"></label>
         </div>
+        <label class="check" title="Keep moving the obstacle with its markers (in vertex order) after it is created">
+          <input id="track" type="checkbox" checked> Follow markers</label>
         <div class="row">
           <button id="btn-create" class="primary">Create obstacle</button>
           <button id="btn-clear">Clear selection</button>

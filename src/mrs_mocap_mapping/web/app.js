@@ -15,6 +15,7 @@ const ctx = canvas.getContext('2d');
 let data = null;                 // latest /api/state snapshot
 let occ = { version: -1, img: null, grid: null };
 let listVersion = -1;
+let metaEls = {};                // obstacle id -> meta line, refreshed every poll
 let selection = [];              // [{x, y, z, id, missing}] in click order
 let kind = 'polygon';
 let preview = null;
@@ -62,11 +63,12 @@ async function poll() {
     data = await api('GET', '/api/state');
     reassociateSelection();
     if (data.version !== occ.version) await loadOccupancy();
-    if (data.version !== listVersion) {
+    if (data.edit_version !== listVersion) {
       renderObstacleList();
       fillGridForm();
-      listVersion = data.version;
+      listVersion = data.edit_version;
     }
+    renderObstacleMeta();
     if (!viewInitialised) { fitView(); viewInitialised = true; }
     renderStatus();
   } catch (err) {
@@ -142,9 +144,28 @@ function renderStatus() {
   $('sel-count').textContent = `${selection.length} selected`;
 }
 
+function obstacleMeta(ob) {
+  let txt = `${ob.kind} · ${ob.vertices.length} pts` + (ob.width ? ` · w ${fmt(ob.width)}` : '');
+  const t = ob.tracking;
+  if (t && t.matched !== null) {
+    txt += t.matched === 0 ? ' · lost, holding' : ` · tracking ${t.matched}/${t.total}`;
+  }
+  return txt;
+}
+
+function renderObstacleMeta() {
+  for (const ob of data.obstacles) {
+    const el = metaEls[ob.id];
+    if (!el) continue;
+    el.textContent = obstacleMeta(ob);
+    el.classList.toggle('warn', !!(ob.tracking && ob.tracking.matched === 0));
+  }
+}
+
 function renderObstacleList() {
   const ul = $('obstacles');
   ul.innerHTML = '';
+  metaEls = {};
   if (!data.obstacles.length) {
     ul.innerHTML = '<li class="muted">none yet</li>';
     return;
@@ -160,9 +181,13 @@ function renderObstacleList() {
     name.addEventListener('change', () => patchObstacle(ob.id, { name: name.value }));
     const meta = document.createElement('div');
     meta.className = 'meta';
-    meta.textContent = `${ob.kind} · ${ob.vertices.length} pts`
-      + (ob.width ? ` · w ${fmt(ob.width)}` : '');
+    metaEls[ob.id] = meta;
     nameBox.append(name, meta);
+    const track = document.createElement('input');
+    track.type = 'checkbox';
+    track.checked = ob.track;
+    track.title = 'follow markers';
+    track.addEventListener('change', () => patchObstacle(ob.id, { track: track.checked }));
     const infl = document.createElement('input');
     infl.type = 'number';
     infl.step = '0.01';
@@ -179,7 +204,7 @@ function renderObstacleList() {
       try { await api('DELETE', `/api/obstacles/${ob.id}`); toast(`deleted ${ob.name}`); }
       catch (e) { toast(e.message, true); }
     });
-    li.append(sw, nameBox, infl, del);
+    li.append(sw, nameBox, track, infl, del);
     ul.append(li);
   }
 }
@@ -210,6 +235,7 @@ function obstacleBody() {
     name: $('name').value.trim() || undefined,
     width: kind === 'polygon' ? undefined : Number($('width').value),
     inflation: Number($('inflation').value),
+    track: $('track').checked,
     points: selection.map(({ x, y, z, id }) => ({ x, y, z, id })),
   };
 }

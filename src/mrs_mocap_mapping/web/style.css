@@ -90,12 +90,14 @@ button:disabled { opacity: .5; cursor: default; }
 
 #obstacles { list-style: none; margin: 0; padding: 0; }
 #obstacles li {
-  display: grid; grid-template-columns: 10px 1fr auto auto; gap: 6px; align-items: center;
+  display: grid; grid-template-columns: 10px 1fr auto auto auto; gap: 6px; align-items: center;
   padding: 3px 0;
 }
 #obstacles li .swatch { width: 10px; height: 10px; border-radius: 2px; }
 #obstacles li input { width: 100%; }
 #obstacles li .meta { color: var(--muted); font-size: 11px; }
+#obstacles li .meta.warn { color: var(--warn); }
+#obstacles li input[type="checkbox"] { width: auto; }
 
 .warn { color: var(--warn); }
 

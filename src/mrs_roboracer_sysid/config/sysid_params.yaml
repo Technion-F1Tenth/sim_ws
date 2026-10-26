@@ -65,7 +65,8 @@ sysid_data_collector:
     io.twist_topic: "/sysid/twist"       # "" to disable
     io.odom_topic: "/ego_racecar/odom"   # "" to disable
     io.drive_topic: "/safe_drive"
-    io.bag_path: "/home/mrslab3/sysid_bags/session"
+    io.bag_path: ""                    # "" -> <io.bag_dir>/sysid_<YYYYmmdd_HHMMSS> per session
+    io.bag_dir: "~/sysid_bags"
 
     visualization.publish_path: true
     visualization.path_topic: "/sysid/path"

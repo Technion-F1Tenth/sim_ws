@@ -42,12 +42,12 @@ Two ROS packages, because rosidl message generation requires `ament_cmake`:
     check (no geofence -- out of scope, see §7).
   - `sync_chirp.py` -- steering-step sync-chirp maneuver prepended to every
     generated path.
-  - `odom_to_pose_adapter.py` -- **dev-only** node that republishes
-    `/ego_racecar/odom` as `PoseStamped`/`TwistStamped` so the node can be
-    developed/tested in sim without a mocap system.
+  - `odom_to_pose_adapter.py` -- republishes a ground-truth `Odometry`
+    (`/ego_racecar/odom` in sim, `/mocap_odom` with mocap) as
+    `/sysid/pose` `PoseStamped` (+ `/sysid/twist` in sim only).
   - `mocap_pose_adapter.py` -- republishes one named
     `mocap4r2_msgs/RigidBodies` entry from `mocap4r2_optitrack_driver` as
-    `PoseStamped`, for real mocap runs (see §6).
+    `PoseStamped`. No longer launched by `mrs_roboracer_bringup` (see §6).
   - `sysid_data_collector.py` -- the main node and state machine.
   - `bag_to_dataset.py` -- offline `rosbag2` -> flat-table extraction
     (`sysid_bag_to_dataset` console script).
@@ -62,10 +62,10 @@ source install/setup.bash
 
 ## 4. Quick start (sim/dev)
 
-1. Launch the f1tenth_gym_ros sim separately (not part of this package).
-2. Launch the sim bringup (adapter + collector + `safety_node`) from `mrs_roboracer_bringup`:
+1. Launch the sim, adapter, collector and `safety_node` from `mrs_roboracer_bringup`
+   (`mode:=sim` includes the f1tenth_gym_ros bridge):
    ```bash
-   ros2 launch mrs_roboracer_bringup sysid_sim_launch.py
+   ros2 launch mrs_roboracer_bringup sysid_launch.py mode:=sim
    ```
 3. Start a session (generates all `paths.N` paths, starts `ros2 bag record`):
    ```bash
@@ -78,10 +78,20 @@ source install/setup.bash
    ```
    Each call executes one generated path, then waits in `SETTLE` until the
    car is stationary before becoming `ARMED` for the next path.
-5. After the last path, the node writes
-   `<io.bag_path>_coverage_report.json` and stays in `DONE`. To start
-   another session, **restart the node with a different `io.bag_path`**
-   (`ros2 bag record` refuses to write into an existing directory; see §7).
+   To stop a program early (e.g. the car is heading for a wall), call
+   `/sysid/abort_path`. The car is commanded to zero and the bag keeps
+   recording. Once the car is stationary, the node goes to `ARMED` for the
+   next path (see §7).
+5. After the last path, or after calling `/sysid/end_session` to stop early,
+   the node stops the bag, writes `<bag_path>_coverage_report.json` and goes
+   to `DONE`. Calling `start_session` again starts a new session with a new
+   bag, so the node does not need a restart.
+
+With `io.bag_path` empty (the default), each session records to a fresh
+`<io.bag_dir>/sysid_<YYYYmmdd_HHMMSS>` (`io.bag_dir` defaults to
+`~/sysid_bags`), and the `start_session` reply names it. An explicit
+`io.bag_path` must not exist yet, because `ros2 bag record` refuses to write
+into an existing directory. It only works for one session per node.
 
 Monitor `/sysid/meta` (`phase` field mirrors the state machine: `IDLE=0,
 GENERATE=1, ARMED=2, EXECUTE=3, SETTLE=4, DONE=5`) and `/safe_drive` to
@@ -109,7 +119,7 @@ All parameters live in `config/sysid_params.yaml`, grouped by dotted prefix:
 - **`io.*`** -- topic names. `io.drive_topic` (default `/safe_drive`) is
   the **only** topic this node publishes commands to -- it never publishes
   `/drive` directly (see §7). `io.bag_path` is the `ros2 bag record -o`
-  argument; set `io.twist_topic`/`io.odom_topic` to `""` to disable those
+  argument (empty: auto-named under `io.bag_dir`, see §4); set `io.twist_topic`/`io.odom_topic` to `""` to disable those
   subscriptions/bag topics.
 - **`velocity.*`** -- `velocity_source` is currently informational
   (`pose_derivative` is the only one the node runs online, for the SETTLE
@@ -132,31 +142,49 @@ All parameters live in `config/sysid_params.yaml`, grouped by dotted prefix:
 
 Ground truth comes from a lab OptiTrack system via
 [`mocap4ros2_optitrack`](https://github.com/MOCAP4ROS2-Project/mocap4ros2_optitrack)
-(`mocap4r2_optitrack_driver`), run as a separate package/workspace -- it is
-not vendored into this repo. The driver:
+(`mocap4r2_optitrack_driver`). The driver:
 
-- Is a **lifecycle node** (`mocap4r2_optitrack_driver_node`); after
-  launching it, you must activate it:
-  ```bash
-  ros2 launch mocap4r2_optitrack_driver optitrack2.launch.py
-  ros2 lifecycle set /mocap4r2_optitrack_driver_node activate
-  ```
+- Is a **lifecycle node** (`mocap4r2_optitrack_driver_node`).
+  `mrs_roboracer_bringup/launch/optitrack_launch.py` starts, configures and
+  activates it, and `mocap_map_launch.py` includes that file, so no manual
+  `ros2 lifecycle set` is needed.
 - Publishes `rigid_bodies` (`mocap4r2_msgs/msg/RigidBodies`): one message
   per mocap frame, `header` + `RigidBody[]`, each with a `rigid_body_name`
-  (as configured in Motive) and a `geometry_msgs/Pose`. `header.frame_id`
+  (the numeric Motive Streaming ID as a string, e.g. `"4"`, **not** the
+  asset name) and a `geometry_msgs/Pose`. `header.frame_id`
   is hardcoded `"map"` by the driver. There is **no native PoseStamped
   output and no twist/velocity output**.
 
-`mocap_pose_adapter.py` bridges this: it subscribes to `rigid_bodies`,
-picks the body matching the `rigid_body_name` parameter, and republishes it
-as `geometry_msgs/PoseStamped` on `pose_topic` (default `/mocap/pose`),
-which feeds `sysid_data_collector` exactly like `odom_to_pose_adapter.py`
-does in sim. `sysid_mocap_launch.py` launches this adapter alongside
-`sysid_data_collector` + `safety_node`:
+The pit PC runs the driver plus `mrs_mocap_mapping`'s `mocap_map_node`,
+which publishes the car as `/mocap_odom` (`nav_msgs/Odometry` of
+`base_link` in `map`, with the `up_axis` and `body_to_base` corrections
+applied). That is the mocap pose source for every `mode:=mocap` launch,
+sysid included. On the car, `sysid_launch.py mode:=mocap` starts the car
+hardware (f1tenth_stack), `odom_to_pose_adapter` (`/mocap_odom` ->
+`/sysid/pose`), `sysid_data_collector` and `safety_node`:
 
 ```bash
-ros2 launch mrs_roboracer_bringup sysid_mocap_launch.py rigid_body_name:=<asset_name>
+# pit PC: OptiTrack driver (auto configured + activated) + mocap_map_node
+ros2 launch mrs_roboracer_bringup mocap_map_launch.py car_rigid_body_name:=<streaming ID> up_axis:=y
+# car: f1tenth_stack + adapter + collector + safety_node; the bag is recorded on the car
+ros2 launch mrs_roboracer_bringup sysid_launch.py mode:=mocap \
+    params_file:=<.../sysid_params_3x3.yaml>
 ```
+
+Pass `launch_hardware:=false` if f1tenth_stack already runs on the car, or
+`launch_mocap:=true car_rigid_body_name:=<streaming ID>` to run the pit
+side on the car as well.
+
+Both machines need the same `ROS_DOMAIN_ID`, and their clocks must be
+synchronized (chrony, with the car as a client of the pit PC). `/mocap_odom`
+is stamped with the pit clock (at receipt by `mocap_map_node`), while
+`/sysid/meta` is stamped with the car clock, and `sysid_bag_to_dataset`
+aligns them by header stamp. Any clock offset therefore shows up as fake
+dead time. Check `chronyc tracking` on the car before each session.
+
+Bags recorded before 2026-10-26 (`sysid_pit_launch.py` + `sysid_car_launch.py`)
+have the raw rigid-body pose on `/mocap/pose` instead of `/sysid/pose`: pass
+`--pose-topic /mocap/pose` to `sysid_bag_to_dataset` for those.
 
 Notes:
 
@@ -183,19 +211,22 @@ Notes:
 - **Stale-pose watchdog**: `PoseStalenessWatchdog` runs on an independent
   timer at `safety.watchdog_rate_hz`. If no pose has been received within
   `safety.pose_timeout_ms`, `/sysid/meta.flag_stale_pose=true`, `arm_path`
-  is refused, and an in-progress `EXECUTE` aborts to `IDLE` (publishing a
-  zero command).
+  is refused, and an in-progress `EXECUTE` aborts that program (see below).
 - **No geofence / capture-volume enforcement.** `paths.workspace_bounds`
   only constrains where waypoints are *sampled* -- it is not checked at
   runtime. This is a research node: **run with an operator and RC override
   present at all times.**
-- **Abort/DONE recovery requires a fresh bag path.** Both an aborted
-  session (stale pose / path timeout) and a completed
-  (`DONE`) session stop the bag recording and leave the node in a state
-  where `start_session` either is refused (`DONE`) or would try to
-  `ros2 bag record` into the same (now-existing) `io.bag_path` directory,
-  which `ros2 bag record` refuses. **Restart the node with a new
-  `io.bag_path`** to start a fresh session.
+- **Aborts end one program, not the session.** A stale pose,
+  `safety.path_timeout_s` or `/sysid/abort_path` publishes zero and moves to
+  `SETTLE`. The bag keeps recording, and once the car is stationary the
+  node arms the next path. An abort on the last path ends the session
+  (`DONE`). Each abort is appended to `<bag_path>_aborted.json` (also listed
+  under `aborted` in the coverage report), naming the path and the segment
+  that was cut short. `sysid_bag_to_dataset` reads that file and sets
+  `flag_segment_aborted` on that segment, and `sysid_fit_input_noise` drops
+  it. Segments that finished before the abort are kept. The aborted program
+  is not retried, so its remaining segments are missing from the
+  session.
 
 ## 8. Sync chirp
 
@@ -224,7 +255,7 @@ Output columns (one row per executed command step):
 
 | Column | Meaning |
 |---|---|
-| `path_id`, `step_index` | from `/sysid/meta` |
+| `path_id`, `step_index`, `phase` | from `/sysid/meta` (`phase`: 3 = EXECUTE) |
 | `t_cmd` | `/sysid/meta.header.stamp` (= intended command time) |
 | `t_pose_start`/`t_pose_end` | nearest raw pose samples at-or-before `t_cmd` of this step / the next step (**no interpolation**) |
 | `dt` | `t_pose_end - t_pose_start` (actual measured interval; `NaN` for the last step of a session) |
@@ -248,7 +279,7 @@ This tool explicitly does **not** compute `f(x_l, u_l)`, residuals `e_l`,
 | Executed commands match the inverted spline | Compare `v_cmd`/`delta_cmd` from `bag_to_dataset.py` output against the persisted `GeneratedPath.commands` in `<paths.persist_dir>/path_<NNN>.npz` for the same `path_id`/`step_index`. |
 | Logged `dt`s uniform at `rate.control_rate_hz`; jitter bounded | `diff(t_cmd)` in the extracted dataset should be `~= 1/control_rate_hz`; histogram `/sysid/meta.loop_jitter_s` and confirm it stays within a few ms. |
 | Sync chirp data present every path | Confirm rows with `flag_sync_chirp=true` exist at the start of every `path_id`, with the expected hold/step/step-back `delta_cmd` pattern. (Cross-correlation itself is future work.) |
-| Stale-pose watchdog fires | Dry run: stop `odom_to_pose_adapter` (or the mocap bridge) mid-`EXECUTE`. Within `safety.pose_timeout_ms`, confirm `/sysid/meta.flag_stale_pose=true`, `/safe_drive` goes to zero, and the node returns to `IDLE` (check logs). |
+| Stale-pose watchdog fires | Dry run: stop `odom_to_pose_adapter` (or the mocap bridge) mid-`EXECUTE`. Within `safety.pose_timeout_ms`, confirm `/sysid/meta.flag_stale_pose=true`, `/safe_drive` goes to zero, and the node moves to `SETTLE` and then `ARMED` for the next path, with the bag still recording (check logs and `<bag_path>_aborted.json`). |
 | Coverage target met, including corner | After a full `N`-path session, inspect `<io.bag_path>_coverage_report.json`: `bins_met`/`bins_total`/`pct_met`, and confirm the corner bin (`v_idx=n_v-1`, `kappa_idx in {0, n_kappa-1}`) has `visits >= target_revisits_per_bin`. If not, increase `paths.N` or `coverage.corner_probe_paths` and run another session (new `io.bag_path`). |
 
 ## 11. Replay / reproducibility
@@ -333,7 +364,7 @@ centre at any point and then call `arm_path`.
 
 ```bash
 ros2 run mrs_roboracer_sysid sysid_bag_to_dataset <bag> steps.csv \
-    --pose-topic /mocap/pose --twist-topic "" --odom-topic "" \
+    --pose-topic /sysid/pose --twist-topic "" --odom-topic "" \
     --segments-output segments.csv --wheelbase 0.33 --lag-s 0.0 --min-arc-m 0.2
 ros2 run mrs_roboracer_sysid sysid_fit_input_noise segments.csv [more.csv ...] \
     --output fit.json --plot-dir plots/

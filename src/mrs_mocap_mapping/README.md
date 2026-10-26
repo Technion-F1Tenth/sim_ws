@@ -5,10 +5,16 @@ Build a `nav_msgs/OccupancyGrid` from OptiTrack markers. Put markers on or aroun
 ## Run
 
 ```bash
-# 1. OptiTrack driver (separate mocap workspace), lifecycle-activated as for sysid.
-# 2. Map node + editor:
-ros2 launch mrs_roboracer_bringup mocap_map_launch.py car_rigid_body_name:=<Motive asset> up_axis:=y
-# 3. Open http://<host>:8080/
+# OptiTrack driver (auto-activated) + map node + editor:
+ros2 launch mrs_roboracer_bringup mocap_map_launch.py car_rigid_body_name:=<streaming ID> up_axis:=y
+# then open http://<host>:8080/
+# If the driver already runs elsewhere on the same ROS_DOMAIN_ID, add launch_optitrack:=false.
+```
+
+This is also the pit-PC side of every `mode:=mocap` driving launch in
+`mrs_roboracer_bringup`: those take the car pose from `/mocap_odom`.
+
+```bash
 ```
 
 | Output | Type | Notes |
@@ -46,11 +52,18 @@ The mocap tree runs **parallel** to the car's: the car already publishes `odom â
 4. Optionally set **inflation** per obstacle, either when you create it or later in the list.
 5. **Fit to obstacles** sizes the grid. **Save map** writes `map_file` (JSON) plus `<name>.pgm/.yaml`, which `nav2_map_server` can load. On startup an existing `map_file` is loaded, and it overrides the `grid.*` parameters.
 
-Obstacles are **static snapshots**. The vertices are the marker positions at creation, so the markers can be removed afterwards. Requests match markers by position (`marker_match_tolerance`), not by id, because OptiTrack re-labels unlabeled markers when they drop out.
+Requests match markers by position (`marker_match_tolerance`), not by id, because OptiTrack re-labels unlabeled markers when they drop out.
+
+**Static vs. following obstacles.** By default the UI ticks **Follow markers** for new obstacles. You can toggle it per obstacle in the list, and it is saved as `track` in the JSON. Files saved before this flag existed load as static.
+- **Static** (`track: false`): the vertices are the marker positions at creation, so the markers can be removed afterwards.
+- **Following** (`track: true`): you can move or reshape the obstacle without redefining it. Each vertex keeps following *its* marker, so the vertex order chosen at creation is kept.
+  - **Matching:** every mocap frame, all following vertices are matched jointly to the live non-car markers (one marker per vertex, gated by `track_gate`, default 0.1 m between consecutive frames). Because matching is by position, re-labelled ids don't matter.
+  - **Occlusion:** occluded vertices are carried along by a rigid fit of the visible ones and picked up again when their marker reappears nearby. With no marker visible, the obstacle shows *lost, holding* and keeps its last pose. It re-acquires its markers only if they come back within `track_gate` of where it holds them, so don't fully cover the markers while carrying the obstacle.
+  - **Map updates:** the map is re-rasterized and republished (at most 10 Hz) once a vertex moves more than `track_min_move` (default 0.01 m). Press **Save map** to store the new positions.
 
 ## Code layout
 
-`frames.py`, `odometry.py`, `obstacles.py`, `grid.py`, `map_state.py` and `web_app.py` don't use rclpy and are unit-tested (`python3 -m pytest -p no:anyio test -q`). `mocap_map_node.py` is the only ROS module. `test/fake_mocap_publisher.py [--up-axis y]` publishes a fake scene (a car driving a circle, a cone ring, a box and a wall) plus a ray-cast `/scan` (frame `laser`), for trying the UI and the scan relay without the rig.
+`frames.py`, `odometry.py`, `obstacles.py`, `tracking.py`, `grid.py`, `map_state.py` and `web_app.py` don't use rclpy and are unit-tested (`python3 -m pytest -p no:anyio test -q`). `mocap_map_node.py` is the only ROS module. `test/fake_mocap_publisher.py [--up-axis y]` publishes a fake scene (a car driving a circle, a cone ring, a box and a wall) plus a ray-cast `/scan` (frame `laser`), for trying the UI and the scan relay without the rig.
 
 ## Extension points (3D / drones, live obstacles)
 

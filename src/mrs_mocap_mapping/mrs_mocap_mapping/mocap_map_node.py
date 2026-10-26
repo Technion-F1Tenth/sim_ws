@@ -7,7 +7,9 @@ converts them into a Z-up map frame (`up_axis`, see frames.py), and serves
 the editor UI on http://<web.host>:<web.port>. Publishes:
 
   map_topic (default /mocap_map)            nav_msgs/OccupancyGrid, transient_local,
-                                            on every edit and every map_publish_period
+                                            on every change (edits, tracked obstacles
+                                            moving; at most 10 Hz) and every
+                                            map_publish_period
   <map_topic>/obstacles                     visualization_msgs/MarkerArray (obstacles
                                             + live markers) for Foxglove/RViz
   odom_topic (default /mocap_odom)          nav_msgs/Odometry of the car's base_link in
@@ -83,6 +85,8 @@ class MocapMapNode(Node):
             car_marker_tolerance=p['car_marker_tolerance'],
             match_tolerance=p['marker_match_tolerance'],
             body_to_base=p['body_to_base'],
+            track_gate=p['track_gate'],
+            track_min_move=p['track_min_move'],
         )
         if self.state.version:
             self.get_logger().info(
@@ -153,6 +157,8 @@ class MocapMapNode(Node):
             'car_exclusion_radius': 0.3,
             'car_marker_tolerance': 0.02,
             'marker_match_tolerance': 0.05,
+            'track_gate': 0.1,
+            'track_min_move': 0.01,
             'map_topic': '/mocap_map',
             'map_file': '~/mocap_maps/arena.json',
             'map_publish_period': 1.0,

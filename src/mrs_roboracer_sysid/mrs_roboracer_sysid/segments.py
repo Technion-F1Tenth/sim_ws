@@ -74,12 +74,31 @@ def segment_table(steps: pd.DataFrame) -> pd.DataFrame:
             "flag_stale_pose": bool(g["flag_stale_pose"].any()),
             "flag_safety_override": bool(g["flag_safety_override"].any())
             if "flag_safety_override" in g else False,
+            "flag_segment_aborted": bool(g["flag_segment_aborted"].any())
+            if "flag_segment_aborted" in g else False,
         })
     seg = pd.DataFrame(rows)
     if not seg.empty:
         seg["flag_after_override"] = (
             seg.groupby("path_id")["flag_safety_override"].cummax().astype(bool))
     return seg
+
+
+def mark_aborted(steps: pd.DataFrame, aborted) -> pd.DataFrame:
+    """
+    Add `flag_segment_aborted` to the per-step table.
+
+    `aborted` is the list from the collector's `<bag_path>_aborted.json`
+    (dicts with `path_id` and `segment_id`). Only the segment that was
+    running when its program was aborted is flagged; it was cut short, so
+    its T and end state no longer describe a full held-rate segment.
+    """
+    cut = {(int(a["path_id"]), int(a["segment_id"]))
+           for a in aborted if int(a["segment_id"]) >= 0}
+    steps = steps.copy()
+    steps["flag_segment_aborted"] = [
+        (int(p), int(s)) in cut for p, s in zip(steps["path_id"], steps["segment_id"])]
+    return steps
 
 
 def _interp(t_query: float, t: np.ndarray, y: np.ndarray, max_gap_s: float) -> float:

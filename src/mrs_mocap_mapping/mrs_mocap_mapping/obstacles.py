@@ -1,9 +1,10 @@
 """
 Obstacle model and vertex ordering (rclpy-free).
 
-Obstacles are static snapshots of marker positions, stored in the map frame
+Obstacles are snapshots of marker positions, stored in the map frame
 (see `frames.py`) with full 3D vertices so the same file can later drive a
-voxel map. Kinds:
+voxel map. With `track` set, the node keeps moving the vertices with their
+markers (see `tracking.py`); otherwise they stay where they were created. Kinds:
 
   polygon     filled area bounded by the vertices.
   polyline    open thin wall: vertex chain swept by `width`.
@@ -45,6 +46,7 @@ class Obstacle:
     z_min: float = 0.0
     z_max: float = 0.0
     inflation: float = 0.0
+    track: bool = False
     source_marker_ids: List[int] = field(default_factory=list)
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
@@ -92,6 +94,7 @@ class Obstacle:
             'z_min': self.z_min,
             'z_max': self.z_max,
             'inflation': self.inflation,
+            'track': self.track,
             'source_marker_ids': list(self.source_marker_ids),
         }
 
@@ -106,6 +109,7 @@ class Obstacle:
             z_min=float(d.get('z_min', 0.0)),
             z_max=float(d.get('z_max', 0.0)),
             inflation=float(d.get('inflation', 0.0)),
+            track=bool(d.get('track', False)),
             source_marker_ids=[int(i) for i in d.get('source_marker_ids', [])],
         )
 
@@ -207,7 +211,7 @@ def resolve_order(points, kind: str, order: Optional[str]) -> np.ndarray:
 def make_obstacle(name: str, kind: str, points, order: Optional[str] = None,
                   width: float = 0.0, inflation: float = 0.0,
                   z_min: Optional[float] = None, z_max: Optional[float] = None,
-                  z_margin: float = 0.05, marker_ids=None) -> Obstacle:
+                  z_margin: float = 0.05, marker_ids=None, track: bool = False) -> Obstacle:
     """Build an obstacle from marker positions (N, 3) in the map frame."""
     if kind not in SHAPE_KINDS:
         raise ValueError(f'cannot build a {kind!r} obstacle from markers')
@@ -226,6 +230,7 @@ def make_obstacle(name: str, kind: str, points, order: Optional[str] = None,
         z_min=min(z_lo, 0.0) if z_min is None else z_lo,
         z_max=z_hi,
         inflation=float(inflation),
+        track=bool(track),
         source_marker_ids=[int(ids[i]) for i in idx] if ids else [],
     )
 

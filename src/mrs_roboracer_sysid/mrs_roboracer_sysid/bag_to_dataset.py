@@ -13,7 +13,7 @@ It explicitly does NOT:
     written by sysid_data_collector at session end),
   - perform sync-chirp cross-correlation / lag estimation.
 
-Output columns: path_id, step_index, t_cmd, t_pose_start, t_pose_end, dt,
+Output columns: path_id, step_index, phase, t_cmd, t_pose_start, t_pose_end, dt,
 x_l, y_l, theta_l, v_meas_l, x_lp1, y_lp1, theta_lp1, v_cmd, delta_cmd,
 kappa_cmd, coverage_bin, lat_accel_est, flag_sync_chirp, flag_high_lat_accel,
 flag_stale_pose, segment_id, u1_cmd, u2_cmd, v_ref, delta_ref, dt_cmd,
@@ -31,6 +31,8 @@ table for held-rate-step programs (`paths.mode: rate_steps`); see
 """
 
 import argparse
+import json
+import os
 import sys
 
 import numpy as np
@@ -40,7 +42,7 @@ from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 
 from mrs_roboracer_sysid.motion_model import quaternion_to_yaw
-from mrs_roboracer_sysid.segments import compute_residuals, segment_table
+from mrs_roboracer_sysid.segments import compute_residuals, mark_aborted, segment_table
 from mrs_roboracer_sysid.velocity_estimators import (
     MocapTwistEstimator,
     OnboardOdomEstimator,
@@ -182,6 +184,7 @@ def _extract(bag_path, pose_topic, twist_topic, odom_topic, meta_topic, sg_windo
         row = {
             'path_id': meta.path_id,
             'step_index': meta.step_index,
+            'phase': meta.phase,
             't_cmd': t_cmd,
             't_pose_start': t_pose_start,
             't_pose_end': t_pose_end,
@@ -262,11 +265,24 @@ def main(argv=None) -> int:
                              'window by this much.')
     parser.add_argument('--min-arc-m', type=float, default=0.2,
                         help='Steering-channel arc-length gate (v*T).')
+    parser.add_argument('--aborted-log',
+                        help='Collector abort log (default: <bag_path>_aborted.json if it '
+                             'exists). Flags the segment each abort cut short.')
     args = parser.parse_args(argv)
 
     df, pose_t, v_meas, thetadot_meas = _extract(
         args.bag_path, args.pose_topic, args.twist_topic, args.odom_topic, args.meta_topic,
         args.sg_window, args.sg_order, args.drive_topic, args.safe_drive_topic)
+
+    aborted_log = args.aborted_log or os.path.normpath(args.bag_path) + '_aborted.json'
+    aborted = []
+    if os.path.exists(aborted_log):
+        with open(aborted_log) as f:
+            aborted = json.load(f).get('aborted', [])
+        print(f"{len(aborted)} aborted program(s) in {aborted_log}")
+    elif args.aborted_log:
+        raise FileNotFoundError(aborted_log)
+    df = mark_aborted(df, aborted)
 
     if args.format == 'csv':
         df.to_csv(args.output_path, index=False)

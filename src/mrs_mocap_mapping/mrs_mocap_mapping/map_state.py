@@ -2,9 +2,15 @@
 Thread-safe state shared by the ROS node and the Flask web app (rclpy-free).
 
 The node feeds raw mocap data in (`set_markers`, `set_car`); the web app reads
-snapshots and edits obstacles / the grid. Every edit bumps `version`, which
-the node watches to republish the OccupancyGrid. The raster is cached and
-rebuilt only when obstacles or the grid change.
+snapshots and edits obstacles / the grid. Every change bumps `version`, which
+the node watches to republish the OccupancyGrid; user edits also bump
+`edit_version`, so the UI rebuilds its forms only for those and not for every
+move of a tracked obstacle. The raster is cached and rebuilt only when
+obstacles or the grid change.
+
+Obstacles with `track` set follow their markers (see `tracking.py`): each
+marker frame updates a per-vertex estimate, and the published vertices are
+replaced once some vertex has moved more than `track_min_move`.
 
 Obstacle requests reference markers by the position the UI last saw, not
 only by id: OptiTrack re-labels unlabeled markers when they drop out, so an
@@ -23,8 +29,9 @@ import numpy as np
 from . import frames
 from .grid import export_pgm_yaml, fit_to_obstacles, GridSpec, rasterize_2d
 from .obstacles import load_map_file, make_obstacle, save_map_file, THIN_KINDS
+from .tracking import assign, rigid_fill
 
-EDITABLE_FIELDS = ('name', 'inflation', 'width', 'z_min', 'z_max')
+EDITABLE_FIELDS = ('name', 'inflation', 'width', 'z_min', 'z_max', 'track')
 
 
 class MapState:
@@ -32,7 +39,8 @@ class MapState:
     def __init__(self, grid: GridSpec, up_axis: str = 'z', map_file: Optional[str] = None,
                  car_exclusion_radius: float = 0.3, car_marker_tolerance: float = 0.02,
                  match_tolerance: float = 0.05, z_margin: float = 0.05,
-                 body_to_base=(0.0, 0.0, 0.0, 0.0), clock=time.monotonic):
+                 body_to_base=(0.0, 0.0, 0.0, 0.0), track_gate: float = 0.1,
+                 track_min_move: float = 0.01, clock=time.monotonic):
         self._lock = threading.RLock()
         self.up_axis = frames.check_up_axis(up_axis)
         self.map_file = os.path.expanduser(map_file) if map_file else None
@@ -40,6 +48,8 @@ class MapState:
         self.car_marker_tolerance = car_marker_tolerance
         self.match_tolerance = match_tolerance
         self.z_margin = z_margin
+        self.track_gate = track_gate
+        self.track_min_move = track_min_move
         self.body_to_base = tuple(float(v) for v in body_to_base)
         if len(self.body_to_base) != 4:
             raise ValueError('body_to_base must be [x, y, z, yaw]')
@@ -48,7 +58,9 @@ class MapState:
         self.grid = grid
         self.obstacles = []
         self.version = 0
+        self.edit_version = 0
         self._raster = None
+        self._tracks = {}   # obstacle id -> {'pos': (V, 3) estimate, 'matched': int or None}
         self.load_note = ''
 
         self._marker_ids = np.zeros(0, dtype=int)
@@ -66,7 +78,9 @@ class MapState:
             if loaded['up_axis'] and loaded['up_axis'] != self.up_axis:
                 self.load_note = (f'{self.map_file} was saved with up_axis={loaded["up_axis"]} '
                                   f'but the node runs with up_axis={self.up_axis}')
-            self.version = 1
+            self.version = self.edit_version = 1
+            for ob in self.obstacles:
+                self._sync_track(ob)
 
     # ---- live mocap input -------------------------------------------------
 
@@ -77,6 +91,37 @@ class MapState:
             self._marker_raw = raw
             self._marker_map = frames.to_map_frame(raw, self.up_axis)
             self._markers_stamp = self._clock()
+            self._track_obstacles()
+
+    def _track_obstacles(self) -> None:
+        tracked = [ob for ob in self.obstacles if ob.track]
+        if not tracked:
+            return
+        live = self._marker_map[~self._excluded_mask()]
+        prev = np.concatenate([self._tracks[ob.id]['pos'] for ob in tracked])
+        idx = assign(prev, live, self.track_gate)
+        moved, k = False, 0
+        for ob in tracked:
+            tr = self._tracks[ob.id]
+            n = len(tr['pos'])
+            i = idx[k:k + n]
+            k += n
+            matched = i >= 0
+            new = tr['pos'].copy()
+            new[matched] = live[i[matched]]
+            tr['pos'] = rigid_fill(tr['pos'], new, matched)
+            tr['matched'] = int(matched.sum())
+            if np.linalg.norm(tr['pos'] - ob.vertices, axis=1).max() > self.track_min_move:
+                ob.vertices = tr['pos'].copy()
+                moved = True
+        if moved:
+            self._changed(edit=False)
+
+    def _sync_track(self, ob) -> None:
+        if ob.track and ob.id not in self._tracks:
+            self._tracks[ob.id] = {'pos': ob.vertices.copy(), 'matched': None}
+        elif not ob.track:
+            self._tracks.pop(ob.id, None)
 
     def set_car(self, raw_position, raw_quat, raw_marker_positions=()):
         """
@@ -136,16 +181,24 @@ class MapState:
                 raw_range = [float(v) for v in np.ptp(self._marker_raw, axis=0)]
             return {
                 'version': self.version,
+                'edit_version': self.edit_version,
                 'up_axis': self.up_axis,
                 'markers': markers,
                 'markers_age': self._age(self._markers_stamp),
                 'raw_range': raw_range,
                 'car': car,
-                'obstacles': [o.to_dict() for o in self.obstacles],
+                'obstacles': [self._obstacle_view(o) for o in self.obstacles],
                 'grid': self.grid.to_dict(),
                 'map_file': self.map_file,
                 'load_note': self.load_note,
             }
+
+    def _obstacle_view(self, ob) -> dict:
+        d = ob.to_dict()
+        tr = self._tracks.get(ob.id)
+        if tr is not None:
+            d['tracking'] = {'matched': tr['matched'], 'total': len(tr['pos'])}
+        return d
 
     def car_pose(self):
         with self._lock:
@@ -202,6 +255,7 @@ class MapState:
             z_max=_opt_float(body.get('z_max')),
             z_margin=self.z_margin,
             marker_ids=ids,
+            track=bool(body.get('track', False)),
         )
 
     def add_obstacle(self, body: dict):
@@ -210,6 +264,7 @@ class MapState:
             if not body.get('name'):
                 ob.name = f'{ob.kind}_{len(self.obstacles) + 1}'
             self.obstacles.append(ob)
+            self._sync_track(ob)
             self._changed()
         return ob
 
@@ -221,19 +276,23 @@ class MapState:
                 raise ValueError(f'cannot edit fields {sorted(unknown)}')
             backup = ob.to_dict()
             for k, v in fields.items():
-                setattr(ob, k, str(v) if k == 'name' else float(v))
+                if k == 'track' and not isinstance(v, bool):
+                    raise ValueError('track must be true or false')
+                setattr(ob, k, str(v) if k == 'name' else v if k == 'track' else float(v))
             try:
                 ob.validate()
             except ValueError:
                 for k in fields:
                     setattr(ob, k, backup[k])
                 raise
+            self._sync_track(ob)
             self._changed()
             return ob
 
     def delete_obstacle(self, obstacle_id: str) -> None:
         with self._lock:
             self.obstacles.remove(self._find(obstacle_id))
+            self._tracks.pop(obstacle_id, None)
             self._changed()
 
     def _find(self, obstacle_id: str):
@@ -266,8 +325,10 @@ class MapState:
                 self._raster = rasterize_2d(self.grid, self.obstacles)
             return self.version, self.grid, self._raster
 
-    def _changed(self) -> None:
+    def _changed(self, edit: bool = True) -> None:
         self.version += 1
+        if edit:
+            self.edit_version += 1
         self._raster = None
 
     # ---- persistence ------------------------------------------------------

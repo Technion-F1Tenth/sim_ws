@@ -14,6 +14,7 @@
   <exec_depend>mrs_reactive_driver</exec_depend>
   <exec_depend>mrs_roboracer_inference</exec_depend>
   <exec_depend>mrs_mocap_mapping</exec_depend>
+  <exec_depend>mocap4r2_optitrack_driver</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

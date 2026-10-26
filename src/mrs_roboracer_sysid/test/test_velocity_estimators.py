@@ -42,6 +42,42 @@ def test_pose_derivative_compute_batch_matches_known_velocity():
     assert np.all(np.isnan(v_est[n - half:]))
 
 
+def test_compute_batch_equals_savgol_on_uniform_grid():
+    from scipy.signal import savgol_filter
+
+    rng = np.random.default_rng(0)
+    t, x, y, theta = _circular_trajectory(80, 1 / 180, 1.5, 0.8)
+    x = x + rng.normal(0, 1e-4, x.size)
+    _, thetadot = PoseDerivativeEstimator.compute_batch(t, x, y, theta, window=9, polyorder=2)
+    ref = savgol_filter(theta, 9, 2, deriv=1, delta=1 / 180)
+    np.testing.assert_allclose(thetadot[4:-4], ref[4:-4], atol=1e-9)
+
+
+def test_compute_batch_handles_gaps_duplicates_and_jitter():
+    # 180 Hz mocap with jittered stamps, dropped frames, repeats and a long gap,
+    # the pattern seen when the pose stream crosses WiFi.
+    rng = np.random.default_rng(1)
+    v_true, omega, dt = 1.5, 0.8, 1 / 180
+    t_true = np.arange(400) * dt
+    keep = rng.random(400) > 0.15                 # ~15 % dropped frames
+    keep[150:250] = False                         # 0.55 s gap
+    t = t_true[keep] + rng.normal(0, 3e-4, keep.sum())
+    t = np.sort(t)
+    t = np.insert(t, 20, t[20])                   # repeated stamp
+    theta = omega * t
+    x = (v_true / omega) * np.sin(theta)
+    y = (v_true / omega) * (1 - np.cos(theta))
+    v_est, w_est = PoseDerivativeEstimator.compute_batch(t, x, y, theta, window=9, polyorder=2)
+    ok = np.isfinite(v_est)
+    assert ok.sum() > 0.8 * len(t) - 40
+    np.testing.assert_allclose(v_est[ok], v_true, rtol=2e-2)
+    np.testing.assert_allclose(w_est[ok], omega, rtol=2e-2)
+    # nothing is estimated from a window that straddles the gap
+    gap_lo, gap_hi = t_true[149], t_true[250]
+    near_gap = (t > gap_lo - 4.5 * dt) & (t < gap_hi + 4.5 * dt)
+    assert not ok[near_gap & ((t < gap_lo + 1e-9) | (t > gap_hi - 1e-9))][[0, -1]].any()
+
+
 def test_pose_derivative_update_online_matches_known_velocity():
     dt = 0.02
     v_true = 1.5

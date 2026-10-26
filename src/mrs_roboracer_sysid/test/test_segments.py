@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from mrs_roboracer_sysid.fit_input_noise import fit_zero_mean_gaussian, select_channels
-from mrs_roboracer_sysid.segments import compute_residuals, segment_table
+from mrs_roboracer_sysid.segments import compute_residuals, mark_aborted, segment_table
 
 L = 0.33
 DT = 0.02
@@ -100,6 +100,24 @@ def test_override_taints_rest_of_program():
     seg = segment_table(steps)
     assert seg["flag_safety_override"].tolist() == [False, True, False]
     assert seg["flag_after_override"].tolist() == [False, True, True]
+
+
+def test_aborted_segment_is_flagged_and_dropped():
+    steps, t, v, w = _simulate([(1.5, 0.0, 15), (0.0, 0.0, 15), (-1.5, 0.0, 15)], [(0, 0)] * 3)
+    # Program 0 was aborted while segment 1 ran; -1 (chirp/brake) entries flag nothing.
+    steps = mark_aborted(steps, [{"path_id": 0, "segment_id": 1},
+                                 {"path_id": 0, "segment_id": -1}])
+    seg = segment_table(steps)
+    assert seg["flag_segment_aborted"].tolist() == [False, True, False]
+    res = compute_residuals(seg, t, v, w, L=L)
+    r_accel, _, counts = select_channels(res)
+    assert sorted(r_accel["segment_id"]) == [0, 2]
+    assert counts["segments_clean"] == 2
+
+
+def test_mark_aborted_without_aborts():
+    steps, *_ = _simulate([(1.5, 0.0, 10)], [(0, 0)])
+    assert not mark_aborted(steps, [])["flag_segment_aborted"].any()
 
 
 def test_input_dependence_flags_lag_like_residuals():

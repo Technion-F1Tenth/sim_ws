@@ -12,8 +12,10 @@ does NOT compute residuals or fit anything.
 
 import json
 import math
+import os
 import signal
 import subprocess
+from datetime import datetime
 from enum import IntEnum
 
 import numpy as np
@@ -115,7 +117,9 @@ _PARAM_DEFAULTS = {
     "io.twist_topic": "/sysid/twist",
     "io.odom_topic": "/ego_racecar/odom",
     "io.drive_topic": "/safe_drive",
-    "io.bag_path": "/home/mrslab3/sysid_bags/session",
+    # "" -> a fresh <io.bag_dir>/sysid_<YYYYmmdd_HHMMSS> per session.
+    "io.bag_path": "",
+    "io.bag_dir": "~/sysid_bags",
 
     "visualization.publish_path": True,
     "visualization.path_topic": "/sysid/path",
@@ -152,31 +156,19 @@ class SysidDataCollector(Node):
         self.rng = np.random.default_rng(self.rng_seed)
         self.get_logger().info(f"sysid_data_collector: rng_seed={self.rng_seed}")
 
-        self.coverage_tracker = CoverageTracker(
-            v_bins=self.config["coverage"]["v_bins"],
-            kappa_bins=self.config["coverage"]["kappa_bins"],
-            target_revisits=self.config["coverage"]["target_revisits_per_bin"],
-            include_figure8=self.config["coverage"]["include_figure8"],
-            figure8_period=self.config["coverage"]["figure8_period"],
-            figure8_speed=self.config["coverage"]["figure8_speed"],
-            prioritize_corner_first=self.config["coverage"]["prioritize_corner_first"],
-            corner_probe_paths=self.config["coverage"]["corner_probe_paths"],
-        )
-
         self.mode = self.config["paths"]["mode"]
         if self.mode not in ("spline", "rate_steps"):
             raise ValueError(f"paths.mode must be 'spline' or 'rate_steps', got {self.mode!r}")
         self.rate_step_config = None
-        self.input_coverage = None
         if self.mode == "rate_steps":
             self.rate_step_config = RateStepConfig.from_config(self.config)
-            self.input_coverage = InputCoverage(
-                self.rate_step_config.u1_levels, self.rate_step_config.u2_levels,
-                self.rate_step_config.v_band_edges, self.rate_step_config.min_arc_m)
+        self._reset_coverage()
         self.get_logger().info(f"sysid_data_collector: paths.mode={self.mode}")
 
-        persist_dir = self.config["paths"]["persist_dir"]
-        self.persist_dir = persist_dir if persist_dir else self.config["io"]["bag_path"] + "_paths"
+        # Resolved per session in _handle_start_session.
+        self.bag_path = None
+        self.persist_dir = None
+        self.aborted = []
 
         self.pose_watchdog = PoseStalenessWatchdog(self.config["safety"]["pose_timeout_ms"])
 
@@ -226,6 +218,10 @@ class SysidDataCollector(Node):
             Trigger, '/sysid/start_session', self._handle_start_session)
         self.arm_path_srv = self.create_service(
             Trigger, '/sysid/arm_path', self._handle_arm_path)
+        self.abort_path_srv = self.create_service(
+            Trigger, '/sysid/abort_path', self._handle_abort_path)
+        self.end_session_srv = self.create_service(
+            Trigger, '/sysid/end_session', self._handle_end_session)
 
         # main control loop + independent pose-staleness watchdog
         control_rate_hz = self.config["rate"]["control_rate_hz"]
@@ -249,6 +245,47 @@ class SysidDataCollector(Node):
             section, key = dotted.split(".", 1)
             config.setdefault(section, {})[key] = value
         return config
+
+    def _reset_coverage(self) -> None:
+        self.coverage_tracker = CoverageTracker(
+            v_bins=self.config["coverage"]["v_bins"],
+            kappa_bins=self.config["coverage"]["kappa_bins"],
+            target_revisits=self.config["coverage"]["target_revisits_per_bin"],
+            include_figure8=self.config["coverage"]["include_figure8"],
+            figure8_period=self.config["coverage"]["figure8_period"],
+            figure8_speed=self.config["coverage"]["figure8_speed"],
+            prioritize_corner_first=self.config["coverage"]["prioritize_corner_first"],
+            corner_probe_paths=self.config["coverage"]["corner_probe_paths"],
+        )
+        self.input_coverage = None
+        if self.rate_step_config is not None:
+            self.input_coverage = InputCoverage(
+                self.rate_step_config.u1_levels, self.rate_step_config.u2_levels,
+                self.rate_step_config.v_band_edges, self.rate_step_config.min_arc_m)
+
+    def _resolve_session_paths(self):
+        """
+        Return (bag_path, persist_dir) for a new session, or (None, reason).
+
+        An empty `io.bag_path` picks a fresh timestamped directory under
+        `io.bag_dir`, so consecutive sessions never collide.
+        """
+        bag_path = self.config["io"]["bag_path"]
+        if bag_path:
+            bag_path = os.path.abspath(os.path.expanduser(bag_path))
+        else:
+            bag_dir = os.path.abspath(os.path.expanduser(self.config["io"]["bag_dir"]))
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            bag_path = os.path.join(bag_dir, f"sysid_{stamp}")
+        if os.path.exists(bag_path):
+            return None, (f"bag path {bag_path} already exists (ros2 bag record refuses it); "
+                          "set io.bag_path to a new directory or leave it empty")
+        try:
+            os.makedirs(os.path.dirname(bag_path), exist_ok=True)
+        except OSError as e:
+            return None, f"cannot create {os.path.dirname(bag_path)}: {e}"
+        persist_dir = self.config["paths"]["persist_dir"] or bag_path + "_paths"
+        return bag_path, persist_dir
 
     def _new_settle_estimator(self) -> PoseDerivativeEstimator:
         return PoseDerivativeEstimator(
@@ -290,20 +327,32 @@ class SysidDataCollector(Node):
     # ------------------------------------------------------------------
 
     def _handle_start_session(self, request, response):
-        if self.state != State.IDLE:
+        # DONE is allowed too: each session gets its own bag directory.
+        if self.state not in (State.IDLE, State.DONE):
             response.success = False
             response.message = f"cannot start session from state {self.state.name}"
             return response
 
+        bag_path, persist_dir = self._resolve_session_paths()
+        if bag_path is None:
+            response.success = False
+            response.message = persist_dir
+            return response
+        self.bag_path, self.persist_dir = bag_path, persist_dir
+        self.aborted = []
+        self._reset_coverage()
+
         n_paths = int(self.config["paths"]["N"])
         self.get_logger().info(
             f"Starting sysid session: rng_seed={self.rng_seed}, N={n_paths} paths")
+        prev_state = self.state
         self.state = State.GENERATE
 
         if not self._generate_all_paths():
             response.success = False
-            response.message = "path generation failed; see log; returning to IDLE"
-            self.state = State.IDLE
+            response.message = (
+                f"path generation failed; see log; returning to {prev_state.name}")
+            self.state = prev_state
             return response
 
         self._start_bag_recording()
@@ -313,9 +362,38 @@ class SysidDataCollector(Node):
         self.state = State.ARMED
         response.success = True
         response.message = (
-            f"session started: {len(self.generated_paths)} paths generated, "
-            f"recording to {self.config['io']['bag_path']}"
+            f"session started: paths.mode={self.mode}, {len(self.generated_paths)} paths "
+            f"generated, recording to {self.bag_path}"
         )
+        return response
+
+    def _handle_abort_path(self, request, response):
+        if self.state != State.EXECUTE:
+            response.success = False
+            response.message = f"no program executing (state {self.state.name})"
+            return response
+        path_id = self.generated_paths[self.path_index].path_id
+        self._abort_path("operator abort")
+        response.success = True
+        response.message = (
+            f"aborted path {path_id}; recording continues, SETTLE then ARMED for the next path")
+        return response
+
+    def _handle_end_session(self, request, response):
+        if self.state not in (State.ARMED, State.EXECUTE, State.SETTLE):
+            response.success = False
+            response.message = f"no session running (state {self.state.name})"
+            return response
+        if self.state == State.EXECUTE:
+            self._record_abort("session ended during execution")
+        self._publish_outputs(self.get_clock().now())
+        completed = self.path_index + (1 if self.state == State.SETTLE else 0)
+        self.state = State.DONE
+        self._finalize_session()
+        response.success = True
+        response.message = (
+            f"session ended after {completed}/{len(self.generated_paths)} paths; "
+            f"bag at {self.bag_path}")
         return response
 
     def _handle_arm_path(self, request, response):
@@ -343,7 +421,7 @@ class SysidDataCollector(Node):
 
     def _start_bag_recording(self) -> None:
         io_cfg = self.config["io"]
-        bag_path = io_cfg["bag_path"]
+        bag_path = self.bag_path
         topics = [io_cfg["drive_topic"], "/drive", "/sysid/meta", io_cfg["pose_topic"]]
         if self.path_pub is not None:
             topics.append(self.config["visualization"]["path_topic"])
@@ -452,21 +530,17 @@ class SysidDataCollector(Node):
         commands = path.commands
 
         if self.pose_stale:
-            self._abort_to_idle("pose became stale during EXECUTE")
+            self._abort_path("pose became stale during EXECUTE")
             return
 
         elapsed_s = (now - self.t_start).nanoseconds / 1e9
         if elapsed_s > self.config["safety"]["path_timeout_s"]:
-            self._abort_to_idle("path execution timed out")
+            self._abort_path("path execution timed out")
             return
 
         if self.step_index >= len(commands):
             self._publish_outputs(now)
-            self.state = State.SETTLE
-            self._settle_confirm_start = None
-            self._settle_enter_time = now
-            self._settle_warned = False
-            self.settle_velocity_estimator = self._new_settle_estimator()
+            self._enter_settle(now)
             return
 
         cmd = commands[self.step_index]
@@ -474,6 +548,13 @@ class SysidDataCollector(Node):
         self._publish_outputs(now, cmd=cmd, path=path, t_intended=t_intended)
         self.coverage_tracker.record_step(cmd.v, cmd.kappa)
         self.step_index += 1
+
+    def _enter_settle(self, now) -> None:
+        self.state = State.SETTLE
+        self._settle_confirm_start = None
+        self._settle_enter_time = now
+        self._settle_warned = False
+        self.settle_velocity_estimator = self._new_settle_estimator()
 
     def _settle_tick(self, now) -> None:
         self._publish_outputs(now)
@@ -518,22 +599,43 @@ class SysidDataCollector(Node):
             self.state = State.DONE
             self._finalize_session()
 
-    def _abort_to_idle(self, reason: str) -> None:
-        self.get_logger().warn(f"Aborting to IDLE: {reason}")
+    def _record_abort(self, reason: str) -> None:
+        """
+        Log the interrupted program to `<bag_path>_aborted.json`.
+
+        The segment that was running is cut short, so `sysid_bag_to_dataset`
+        reads this file and flags it (`flag_segment_aborted`). Segments that
+        finished before the abort stay valid.
+        """
+        path = self.generated_paths[self.path_index]
+        last = self.step_index - 1
+        segment_id = path.commands[last].segment_id if 0 <= last < len(path.commands) else -1
+        self.aborted.append({"path_id": int(path.path_id), "segment_id": int(segment_id),
+                             "step_index": int(self.step_index), "reason": reason})
+        try:
+            with open(self.bag_path + "_aborted.json", "w") as f:
+                json.dump({"aborted": self.aborted}, f, indent=2)
+        except OSError as e:
+            self.get_logger().error(f"failed to write abort log: {e}")
+
+    def _abort_path(self, reason: str) -> None:
+        """Stop the current program but keep the session and the bag running."""
+        path_id = self.generated_paths[self.path_index].path_id
+        self.get_logger().warn(
+            f"Aborting path {path_id} at step {self.step_index}: {reason}. Recording "
+            "continues; the next path arms once the car is stationary.")
+        self._record_abort(reason)
         now = self.get_clock().now()
         self._publish_outputs(now)
-        # Stop the bag so it finalizes cleanly. Per the DONE-state design,
-        # resuming requires a fresh io.bag_path (or node restart) since
-        # `ros2 bag record` refuses to write into an existing bag dir.
-        self._stop_bag_recording()
-        self.state = State.IDLE
+        self._enter_settle(now)
 
     def _finalize_session(self) -> None:
         self._stop_bag_recording()
         report = self.coverage_tracker.report()
         if self.input_coverage is not None:
             report["input_coverage"] = self.input_coverage.report()
-        report_path = self.config["io"]["bag_path"] + "_coverage_report.json"
+        report["aborted"] = self.aborted
+        report_path = self.bag_path + "_coverage_report.json"
         try:
             with open(report_path, "w") as f:
                 json.dump(report, f, indent=2)

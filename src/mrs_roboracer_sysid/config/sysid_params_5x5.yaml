@@ -1,0 +1,110 @@
+# sysid_params.yaml variant for a ~5 x 5 m empty OptiTrack volume.
+#
+# Use:  ros2 launch mrs_roboracer_bringup sysid_mocap_launch.py \
+#         params_file:=$(ros2 pkg prefix mrs_roboracer_sysid)/share/mrs_roboracer_sysid/config/sysid_params_5x5.yaml \
+#         rigid_body_name:=<streaming ID>   (bag goes to ~/sysid_bags/sysid_<timestamp>)
+#
+# Arm every program with the car stopped at the CENTRE of the volume:
+# max_excursion_m is a radius around the arm pose (2.5 m to the walls minus
+# half the car length and margin for real tracking lag vs. the
+# perfect-tracking rollout); for a square of side S use S/2 - 0.3.
+# Differences from sysid_params.yaml are marked "5x5".
+
+sysid_data_collector:
+  ros__parameters:
+    model.L: 0.33
+    model.ref_point: "rear_axle"
+    model.delta_max: 0.4189
+    model.delta_dot_max: 3.2
+
+    limits.v_min: 0.5
+    limits.v_max: 2.5                 # 5x5: stopping distance v^2/(2*stop_decel) ~1.04 m
+    limits.a_max: 2.0
+    limits.a_lat_max_safe: 4.0
+    limits.a_lat_probe_max: 8.0
+
+    # "spline": smooth (v, kappa)-coverage paths, (v, delta) noise model.
+    # "rate_steps": held (u1, u2) = (accel, steering-rate) segments for the
+    # rate-input model v_dot = u1 + w1, delta_dot = u2 + w2 (see steps.*).
+    paths.mode: "rate_steps"
+    paths.N: 40                       # 5x5
+    paths.spline_order: 5
+    paths.waypoints_per_path: 6
+    paths.rng_seed: 42
+    paths.workspace_bounds: [-5.0, 5.0, -5.0, 5.0]   # [x_min, x_max, y_min, y_max], waypoint sampling domain only
+    paths.max_generation_attempts: 50
+    paths.persist_dir: ""              # "" -> derive from io.bag_path + "_paths"
+    paths.check_self_intersection: false
+
+    coverage.v_bins: [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+    # Bin edges must stay within kappa_max = tan(model.delta_max)/model.L
+    # (~1.35 for the defaults above), with margin for spline curvature
+    # to locally exceed a path's nominal 1/radius.
+    coverage.kappa_bins: [-1.2, -0.8, -0.3, 0.3, 0.8, 1.2]
+    coverage.target_revisits_per_bin: 3
+    coverage.include_figure8: true
+    coverage.figure8_period: 5
+    coverage.figure8_radius: 1.5
+    coverage.figure8_speed: 1.5
+    coverage.prioritize_corner_first: true
+    coverage.corner_probe_paths: 2
+
+    # Held-rate-step programs (paths.mode: rate_steps). Each program =
+    # sync chirp -> (lead-in) -> up to segments_per_path held (u1, u2)
+    # segments -> straight brake to stop. Feasibility is checked with a
+    # perfect-tracking rollout, so leave margin in max_excursion_m.
+    steps.u1_levels: [-3.0, -1.5, 0.0, 1.5, 3.0]   # m/s^2
+    steps.u2_levels: [-3.0, -1.5, 0.0, 1.5, 3.0]   # rad/s, |u2| <= model.delta_dot_max
+    steps.min_segment_s: 0.2
+    steps.max_segment_s: 0.6
+    steps.segments_per_path: 15
+    steps.min_arc_m: 0.2              # u2 != 0 segments need v_mean*T >= this (offline gate)
+    steps.v_min_steer: 1.0            # no u2 != 0 segments below this speed
+    steps.delta_margin: 0.02          # rad kept clear of model.delta_max (no saturation)
+    steps.max_excursion_m: 2.2        # 5x5: radius around the arm pose, incl. stopping distance
+    steps.stop_decel: 3.0             # 5x5: m/s^2, final run-out brake
+    steps.lead_in_accel: 1.5          # used only if the sync chirp is disabled
+    steps.lead_in_speed: 1.0
+    steps.v_band_edges: [0.0, 1.0, 1.75, 2.5]     # 5x5: start-speed bands for (u1, u2) coverage
+    # First-order lag compensation (feedforward lead), fit offline from an
+    # uncompensated session -- see README section 13. 0.0 = off.
+    steps.tau_v: 0.0                  # s, speed loop (VESC)
+    steps.tau_delta: 0.0              # s, steering servo
+
+    rate.control_rate_hz: 50.0
+
+    io.pose_topic: "/sysid/pose"
+    io.twist_topic: "/sysid/twist"       # "" to disable
+    io.odom_topic: "/ego_racecar/odom"   # "" to disable
+    io.drive_topic: "/safe_drive"
+    io.bag_path: ""                    # "" -> <io.bag_dir>/sysid_<YYYYmmdd_HHMMSS> per session
+    io.bag_dir: "~/sysid_bags"
+
+    visualization.publish_path: true
+    visualization.path_topic: "/sysid/path"
+    visualization.path_frame: "map"
+    visualization.path_num_samples: 200
+
+    velocity.velocity_source: "pose_derivative"
+    velocity.sg_window: 9
+    velocity.sg_order: 2
+    velocity.sg_dt_jitter_warn_ratio: 0.1
+
+    sync.enable_sync_chirp: true
+    sync.chirp_amplitude: 0.2
+    sync.chirp_duration: 0.4          # 5x5
+    sync.chirp_speed: 1.25            # 5x5
+
+    safety.pose_timeout_ms: 200.0
+    safety.path_timeout_s: 60.0
+    safety.settle_v_eps: 0.05
+    safety.settle_confirm_s: 0.5
+    safety.settle_timeout_s: 10.0
+    safety.watchdog_rate_hz: 20.0
+
+odom_to_pose_adapter:
+  ros__parameters:
+    odom_topic: "/ego_racecar/odom"
+    pose_topic: "/sysid/pose"
+    twist_topic: "/sysid/twist"
+    publish_twist: true

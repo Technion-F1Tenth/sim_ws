@@ -65,6 +65,8 @@ def select_channels(seg: pd.DataFrame, min_speed: float = 0.3,
                     steer_column: str = "steer_rate_resid"):
     """Return (accel rows, steering-rate rows, counts dict) after selection."""
     ok = ~seg["flag_stale_pose"].astype(bool) & ~seg["flag_after_override"].astype(bool)
+    if "flag_segment_aborted" in seg:
+        ok &= ~seg["flag_segment_aborted"].astype(bool)
     moving = seg[ok & (seg["v_meas_a"] >= min_speed) & (seg["v_meas_b"] >= min_speed)]
     accel = moving
     steer = moving[moving["gate_arc"].astype(bool)
