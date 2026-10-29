@@ -32,6 +32,7 @@ struct LoadRequest{
 struct Path {
   Points pts;
   std::vector<double> s;
+  bool closed{true};  // racelines wrap around; paths from incoming_path_topic are open
 };
 
 class PurePursuitNode : public rclcpp::Node
@@ -53,6 +54,7 @@ private:
     bool stop_at_end_{true};          // whether to stop when reaching the final path point
     double stop_distance_{0.20};     // threshold (meters) to consider the robot at the goal
     bool stopped_at_goal_{false};    // internal flag to avoid re-sending stop command
+    size_t progress_idx_{0};         // open paths: closest index never moves backwards
 
 
     static double yaw_from_quat(const geometry_msgs::msg::Quaternion &q)
@@ -108,10 +110,14 @@ private:
             new_path.s[i] = new_path.s[i - 1] + (new_path.pts[i] - new_path.pts[i - 1]).norm();
         }
 
+        // Planned paths go from the robot to a goal: no wrap-around at the end
+        new_path.closed = false;
+
         // replace active path
         path = std::move(new_path);
         // Reset stop flag and (re)enable controller when a new path arrives
         stopped_at_goal_ = false;
+        progress_idx_ = 0;
         is_active_ = true;
         RCLCPP_INFO(this->get_logger(), "Loaded path from topic with %zu points", path.pts.size());
     }
@@ -131,7 +137,7 @@ private:
     }
 
     // March forward along the polyline from 'start_idx' until cumulative arc-length >= L.
-    // Wraps around (good for closed tracks). If path too short, returns start_idx.
+    // Wraps around on closed tracks; stops at the last point on open paths.
     size_t forward_lookahead_index(const Path& p, size_t start_idx, double L) const
     {
         const size_t N = p.pts.size();
@@ -141,6 +147,7 @@ private:
         double acc = 0.0;
         // Cap iterations to N to avoid infinite loops on small/degenerate paths
         for (size_t steps = 0; steps < N && acc < L; ++steps) {
+            if (!p.closed && i == N - 1) break;
             size_t j = (i + 1) % N;
             acc += (p.pts[j] - p.pts[i]).norm();
             i = j;
@@ -161,11 +168,32 @@ private:
         const auto &pos = msg->pose.pose.position;
         Vec2 current_pos(pos.x, pos.y);
 
-        // If configured, check distance to final point and stop when close enough
-        if (stop_at_end_ && !stopped_at_goal_ && !path.pts.empty()) {
+        // 1) Find closest point along the path (by Euclidean distance). On open paths
+        //    search only ahead of the progress so far, so a path that passes near
+        //    itself can't pull the robot back to an earlier part.
+        const size_t search_from = path.closed ? 0 : std::min(progress_idx_, N - 1);
+        double min_dist2 = std::numeric_limits<double>::max();
+        size_t closest_idx = search_from;
+        for (size_t i = search_from; i < N; ++i) {
+            const double d2 = (path.pts[i] - current_pos).squaredNorm();
+            if (d2 < min_dist2) {
+                min_dist2 = d2;
+                closest_idx = i;
+            }
+        }
+        if (!path.closed) progress_idx_ = closest_idx;
+
+        const double min_dist = std::sqrt(min_dist2);
+        const Vec2   closest_point = path.pts[closest_idx];
+
+        // If configured, stop at the final point: within stop_distance, or (open
+        // paths) once the robot has driven past the end of the last segment.
+        if (stop_at_end_ && !stopped_at_goal_) {
             const Vec2 last_point = path.pts.back();
             const double dist_to_last = (last_point - current_pos).norm();
-            if (dist_to_last <= stop_distance_) {
+            const bool passed_end = !path.closed && closest_idx == N - 1 &&
+                (current_pos - last_point).dot(last_point - path.pts[N - 2]) >= 0.0;
+            if (dist_to_last <= stop_distance_ || passed_end) {
                 // publish zero-speed command and mark stopped
                 ackermann_msgs::msg::AckermannDriveStamped ackermann_msg;
                 ackermann_msg.drive.speed = 0.0;
@@ -179,23 +207,18 @@ private:
             }
         }
 
-        // 1) Find closest point along the path (by Euclidean distance)
-        double min_dist2 = std::numeric_limits<double>::max();
-        size_t closest_idx = 0;
-        for (size_t i = 0; i < N; ++i) {
-            const double d2 = (path.pts[i] - current_pos).squaredNorm();
-            if (d2 < min_dist2) {
-                min_dist2 = d2;
-                closest_idx = i;
+        // 2) Choose lookahead point by marching forward along the polyline. Near the
+        //    end of an open path, extend the last segment so the target stays a full
+        //    lookahead ahead instead of collapsing onto (and swinging around) the goal.
+        const size_t look_idx = forward_lookahead_index(path, closest_idx, lookahead_distance_);
+        Vec2 lookahead_point = path.pts[look_idx];
+        if (!path.closed && look_idx == N - 1) {
+            const double remaining = (path.s[N - 1] - path.s[closest_idx]) + min_dist;
+            const Vec2 seg = path.pts[N - 1] - path.pts[N - 2];
+            if (remaining < lookahead_distance_ && seg.norm() > 1e-9) {
+                lookahead_point += seg.normalized() * (lookahead_distance_ - remaining);
             }
         }
-
-        const double min_dist = std::sqrt(min_dist2);
-        const Vec2   closest_point = path.pts[closest_idx];
-
-        // 2) Choose lookahead point by marching forward along the polyline
-        const size_t look_idx = forward_lookahead_index(path, closest_idx, lookahead_distance_);
-        const Vec2   lookahead_point = path.pts[look_idx];
 
         // 3) Vehicle yaw and transform target to vehicle frame
         const double yaw = yaw_from_quat(msg->pose.pose.orientation);
@@ -222,8 +245,8 @@ private:
         ackermann_msg.drive.steering_angle = delta;
         drive_pub_->publish(ackermann_msg);
 
-        // 6) Helpful logs (throttled would be nicer, but keeping it simple)
-        RCLCPP_INFO(this->get_logger(),
+        // 6) Helpful logs, throttled to 1 Hz (odom arrives at ~200 Hz in sim)
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
                     "pos(%.2f, %.2f) -> closest[%zu](%.2f, %.2f) d=%.2f | look[%zu](%.2f, %.2f) | yaw=%.2f rad | steer=%.3f",
                     current_pos.x(), current_pos.y(),
                     closest_idx, closest_point.x(), closest_point.y(), min_dist,
@@ -231,12 +254,59 @@ private:
                     yaw, delta);
     }
 
+    // Centerline CSVs are comma-separated, raceline CSVs ';'-separated: decide
+    // from the first non-comment line.
+    static LoadMode detect_load_mode(const std::string &filepath)
+    {
+        std::ifstream file(filepath);
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            return line.find(',') != std::string::npos ? LoadMode::CENTERLINE : LoadMode::RACELINE;
+        }
+        return LoadMode::RACELINE;
+    }
+
     Path load_path(LoadRequest req){
         Path path;
         switch (req.mode)
         {
         case LoadMode::CENTERLINE:
-
+        {
+            // f1tenth_racetracks centerline: "# x_m, y_m, w_tr_right_m, w_tr_left_m"
+            RCLCPP_INFO(this->get_logger(), "Centerline mode selected, loading...");
+            std::ifstream file(req.filepath);
+            if (!file.is_open()) {
+                RCLCPP_ERROR(this->get_logger(), "Failed to open centerline file: %s", req.filepath.c_str());
+                return path;
+            }
+            std::string line;
+            while (std::getline(file, line)) {
+                if (line.empty() || line[0] == '#') continue;
+                std::stringstream ss(line);
+                std::string col;
+                std::vector<std::string> cols;
+                while (std::getline(ss, col, ',')) {
+                    cols.push_back(col);
+                }
+                if (cols.size() < 2) continue;
+                try {
+                    path.pts.emplace_back(std::stod(cols[0]), std::stod(cols[1]));
+                } catch (const std::exception &) {
+                    RCLCPP_WARN(this->get_logger(), "Failed to parse line: %s", line.c_str());
+                    continue;
+                }
+            }
+            path.s.assign(path.pts.size(), 0.0);
+            for (size_t i = 1; i < path.pts.size(); ++i) {
+                path.s[i] = path.s[i-1] + (path.pts[i] - path.pts[i-1]).norm();
+            }
+            RCLCPP_INFO(this->get_logger(), "Loaded %zu centerline points", path.pts.size());
+            if (!path.pts.empty()) {
+                RCLCPP_INFO(this->get_logger(), "First point: x=%.3f, y=%.3f", path.pts[0].x(), path.pts[0].y());
+            }
+        }
+        break;
 
         case LoadMode::RACELINE:
         {
@@ -351,15 +421,18 @@ public:
         this->declare_parameter<double>("stop_distance", 0.20);
         stop_distance_ = this->get_parameter("stop_distance").as_double();
 
+         // Transient-local: a one-shot/latched path publisher (e.g. a plan
+         // loaded from a file) may publish before this node subscribes.
+         const auto path_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
          path_sub_ = this->create_subscription<nav_msgs::msg::Path>(
-             incoming_path_topic, 10,
+             incoming_path_topic, path_qos,
              std::bind(&PurePursuitNode::path_callback, this, std::placeholders::_1));
 
         if (init_path)
         {
             LoadRequest req;
             req.filepath = raceline_path;
-            req.mode = LoadMode::RACELINE;
+            req.mode = detect_load_mode(raceline_path);
             path = load_path(req);
             if (path.pts.size() < 2) {
                 RCLCPP_WARN(this->get_logger(), "Path has < 2 points; controller will idle until a valid path is loaded.");

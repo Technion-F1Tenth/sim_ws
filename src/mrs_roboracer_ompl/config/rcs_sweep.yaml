@@ -1,0 +1,23 @@
+# RCSStar parameter sweep (planning_node, rcs_sweep.enabled:=true).
+# Start is the current odom pose; goal is the next /goal_pose received.
+# Every key under `grid` is swept as a cartesian product; omitted keys fall
+# back to the node's rcs_* parameters. Only built when HAS_RCS is defined.
+rcs_sweep:
+  output_csv: /tmp/rcs_sweep.csv
+  planning_timeout_sec: 30.0
+  repeat: 1
+
+  # Vehicle params for the sweep (fall back to node params if omitted)
+  base:
+    wheelbase: 0.2032
+    max_velocity: 4.0
+    max_steering_angle: 0.52
+    max_acceleration: 0.5
+    max_steering_rate: 0.035
+    propagation_step_size: 0.3
+    control_duration_steps: 16
+
+  grid:
+    rcs_discrete_level: [1, 2, 3]
+    rcs_lookahead: [0, 1]
+    rcs_epsilon: [0.25, 0.5]

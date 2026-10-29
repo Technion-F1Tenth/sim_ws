@@ -15,8 +15,10 @@ def safety_arguments(max_speed='3.0'):
             'enable_clipping', default_value='true',
             description='Enable clamping of speed/steering to vehicle limits.'),
         DeclareLaunchArgument(
-            'enable_ttc', default_value='true',
-            description='Enable TTC-based AEB override.'),
+            'enable_ttc', default_value='false',
+            description='Enable TTC-based AEB override. Off by default: close-quarters/'
+                        'arena scenarios trip it on normal, intended trajectories -- pass '
+                        'enable_ttc:=true to opt back in.'),
         DeclareLaunchArgument(
             'max_speed', default_value=max_speed,
             description='Max |speed| (m/s) when clipping is enabled.'),

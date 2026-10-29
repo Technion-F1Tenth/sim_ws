@@ -23,7 +23,7 @@ class SafetyNode(Node):
 
         # Behavior toggle parameters
         self.declare_parameter('enable_clipping', True)
-        self.declare_parameter('enable_ttc', True)
+        self.declare_parameter('enable_ttc', False)
 
         # Tuning parameters
         self.declare_parameter('ttc_threshold', 1.0)          # seconds

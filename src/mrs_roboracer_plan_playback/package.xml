@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mrs_roboracer_plan_playback</name>
+  <version>0.0.0</version>
+  <description>Replays plan CSVs (trajectory + speed/steer setpoints): as a nav_msgs/Path for pure_pursuit_node to track, or as an open-loop AckermannDriveStamped command sequence.</description>
+  <maintainer email="andykamin3@gmail.com">root</maintainer>
+  <license>TODO: License declaration</license>
+
+  <depend>rclpy</depend>
+  <depend>ackermann_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

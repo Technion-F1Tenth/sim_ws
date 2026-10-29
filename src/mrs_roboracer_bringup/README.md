@@ -32,6 +32,24 @@ ros2 launch mrs_roboracer_bringup inference_launch.py mode:=sim|onboard|mocap
 ros2 launch mrs_roboracer_bringup pure_pursuit_safety_launch.py mode:=sim|onboard|mocap \
     raceline_path:=<csv> init_path:=true
 
+# Track an OL_MCTS plan CSV with pure pursuit (closed-loop). No onboard
+# mode: the plan's coordinates assume the arena map (sim.yaml's default map)
+# or /mocap_odom's frame, not an independently-localized map.
+ros2 launch mrs_roboracer_bringup mcts_pure_pursuit_launch.py mode:=sim|mocap [plan_csv:=...]
+
+# Replay any plan CSV's speed/steer setpoints open-loop (no odometry
+# feedback) -- not specific to any one planner. Pass the same plan_csv as
+# above to compare open-loop vs. pure-pursuit tracking of the same run. No
+# onboard mode, for the same reason.
+ros2 launch mrs_roboracer_bringup open_loop_playback_launch.py mode:=sim|mocap plan_csv:=...
+
+# OMPL planner (mrs_roboracer_ompl) -> /planned_path -> pure pursuit. Each goal on
+# /goal_pose (Foxglove/RViz "2D Goal Pose") triggers one plan from the current pose.
+# The planner only plans; tracking stays in the controller. Onboard needs map:=<yaml>;
+# mocap plans on /mocap_map from the pit PC.
+ros2 launch mrs_roboracer_bringup ompl_pure_pursuit_launch.py mode:=sim|onboard|mocap \
+    [planner_type:=dubins|rrt]
+
 # System ID (needs ground truth: no onboard mode)
 ros2 launch mrs_roboracer_bringup sysid_launch.py mode:=sim|mocap [params_file:=...]
 

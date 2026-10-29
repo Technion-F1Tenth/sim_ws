@@ -15,6 +15,9 @@ mode. Controllers resolve their topics here instead of hardcoding sim names.
          `localization:=true` and a `map`); mocap: mrs_mocap_mapping's
          /mocap_odom, published by the pit PC.
 - drive: the topic the safety node writes and the platform consumes.
+- map:   nav_msgs/OccupancyGrid (latched) for planners. sim: gym bridge's
+         map_server; onboard: localization_launch.py's map_server; mocap:
+         mrs_mocap_mapping's /mocap_map, published by the pit PC.
 """
 
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -30,18 +33,21 @@ TOPICS = {
         'odom': '/ego_racecar/odom',
         'pose': '/ego_racecar/odom',
         'drive': '/drive',
+        'map': '/map',
     },
     'onboard': {
         'scan': '/scan',
         'odom': '/odom',
         'pose': '/pf/pose/odom',
         'drive': '/drive',
+        'map': '/map',
     },
     'mocap': {
         'scan': '/scan',
         'odom': '/odom',
         'pose': '/mocap_odom',
         'drive': '/drive',
+        'map': '/mocap_map',
     },
 }
 
