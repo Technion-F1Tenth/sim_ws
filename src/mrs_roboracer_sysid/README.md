@@ -171,9 +171,9 @@ ros2 launch mrs_roboracer_bringup sysid_launch.py mode:=mocap \
     params_file:=<.../sysid_params_3x3.yaml>
 ```
 
-Pass `launch_hardware:=false` if f1tenth_stack already runs on the car, or
-`launch_mocap:=true car_rigid_body_name:=<streaming ID>` to run the pit
-side on the car as well.
+Pass `launch_hardware:=false` if f1tenth_stack already runs on the car.
+`sysid_launch.py` never starts the OptiTrack driver or `mocap_map_node`
+itself -- `mocap_map_launch.py` on the pit PC is the only place that runs.
 
 Both machines need the same `ROS_DOMAIN_ID`, and their clocks must be
 synchronized (chrony, with the car as a client of the pit PC). `/mocap_odom`

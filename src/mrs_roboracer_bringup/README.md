@@ -63,11 +63,19 @@ Common platform arguments, accepted by every driving launch:
 - `map:=<map .yaml>`: map for onboard localization. Required when the
   controller needs a pose in `mode:=onboard`. `mocap_map_node` exports
   (`~/mocap_maps/*.yaml`) work.
-- `launch_mocap:=true car_rigid_body_name:=<id>`: in `mode:=mocap`, run the
-  OptiTrack driver and `mocap_map_node` on this machine instead of the pit PC.
 
 For mocap, both machines must share `ROS_DOMAIN_ID` and be chrony-synced:
 `/mocap_odom` is stamped with the pit clock.
+
+### Rule: mocap is always car + pit, never one launch
+
+Every `mode:=mocap` driving launch (through `platform_launch.py`) only
+*receives* `/mocap_odom`/`/mocap_map` over the network -- it never starts the
+OptiTrack driver or `mocap_map_node` itself, even for solo-machine testing.
+That processing only ever runs via `mocap_map_launch.py`, started separately
+on the pit PC. A new driving launch must not grow a flag that launches
+mocap processing locally; if you need both on one machine for testing, run
+`mocap_map_launch.py` and the driving launch in two terminals.
 
 ## Building blocks
 
